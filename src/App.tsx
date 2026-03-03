@@ -1789,7 +1789,7 @@ function App() {
               >
                 <DialogTrigger asChild>
                   <Button variant="toolbar" size="icon" title="WebDAV 设定" aria-label="WebDAV 设定">
-                    <SlidersHorizontal className="h-4 w-4" />
+                    <Settings2 className="h-4 w-4" />
                   </Button>
                 </DialogTrigger>
                 <DialogContent className="h-auto w-[calc(100vw-24px)] max-w-[900px] overflow-hidden rounded-[20px] border-[#E5E7EB] bg-[#FFFFFF] p-0 shadow-none md:h-[560px] [&>button:last-child]:hidden">

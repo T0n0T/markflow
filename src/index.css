@@ -1,0 +1,218 @@
+@import "tailwindcss";
+
+:root {
+  font-family: "Inter", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  /* Design variables from /home/tiger/Documents/untitled.pen (Default Accent, Neutral Base, Light Mode). */
+  --accent: #f5f5f5;
+  --accent-foreground: #171717;
+  --background: #fafafa;
+  --black: #000000;
+  --border: #e5e5e5;
+  --card: #fafafa;
+  --card-foreground: #0a0a0a;
+  --destructive: #e7000b;
+  --foreground: #0a0a0a;
+  --input: #e5e5e5;
+  --muted: #f5f5f5;
+  --muted-foreground: #737373;
+  --popover: #fafafa;
+  --popover-foreground: #0a0a0a;
+  --primary: #171717;
+  --primary-foreground: #fafafa;
+  --ring: #a3a3a3;
+  --secondary: #f5f5f5;
+  --secondary-foreground: #171717;
+  --sidebar: #fafafa;
+  --sidebar-accent: #f4f4f4;
+  --sidebar-accent-foreground: #18181b;
+  --sidebar-border: #e4e4e7;
+  --sidebar-foreground: #09090b;
+  --sidebar-primary: #18181b;
+  --sidebar-primary-foreground: #fafafa;
+  --sidebar-ring: #71717a;
+  --white: #ffffff;
+
+  /* App aliases to keep existing component usage intact. */
+  --mf-bg: var(--background);
+  --mf-text: var(--foreground);
+  --mf-muted: var(--muted-foreground);
+  --mf-muted-strong: color-mix(in srgb, var(--muted-foreground) 70%, var(--foreground) 30%);
+  --mf-border: var(--border);
+  --mf-border-soft: var(--input);
+  --mf-sidebar-bg: var(--sidebar);
+  --mf-surface: var(--card);
+  --mf-surface-soft: var(--secondary);
+  --mf-surface-muted: var(--muted);
+  --mf-accent: var(--primary);
+  --mf-accent-soft: color-mix(in srgb, var(--primary) 12%, transparent);
+  --mf-accent-strong: var(--primary);
+  --mf-accent-pale: color-mix(in srgb, var(--primary) 10%, var(--background));
+  --mf-accent-pale-border: color-mix(in srgb, var(--primary) 24%, var(--border));
+  --mf-accent-pale-hover: color-mix(in srgb, var(--mf-accent-pale) 72%, var(--mf-accent) 28%);
+  --mf-success: #22c55e;
+  --mf-danger: var(--destructive);
+  --mf-ring: var(--ring);
+  --mf-placeholder: var(--muted-foreground);
+  --mf-surface-hover: color-mix(in srgb, var(--muted) 84%, var(--foreground) 16%);
+  --mf-focus-ring-soft: color-mix(in srgb, var(--ring) 28%, transparent);
+  --mf-danger-soft: color-mix(in srgb, var(--destructive) 12%, var(--background));
+  --mf-code-bg: color-mix(in srgb, var(--foreground) 85%, var(--background));
+  --mf-code-text: var(--background);
+  --mf-quote-bg: color-mix(in srgb, var(--primary) 8%, var(--background));
+  --mf-quote-border: color-mix(in srgb, var(--primary) 22%, var(--border));
+  --mf-hero-glow: color-mix(in srgb, var(--ring) 45%, transparent);
+  --mf-hero-layer: color-mix(in srgb, var(--primary-foreground) 10%, transparent);
+  --mf-hero-title: color-mix(in srgb, var(--primary-foreground) 95%, transparent);
+  --mf-hero-subtitle: color-mix(in srgb, var(--primary-foreground) 78%, transparent);
+  --mf-hero-card-border: color-mix(in srgb, var(--primary-foreground) 35%, transparent);
+  --mf-hero-card-text: color-mix(in srgb, var(--primary-foreground) 86%, transparent);
+  --mf-radius-sm: 6px;
+  --mf-radius-md: 8px;
+  --mf-radius-lg: 10px;
+  --mf-radius-xl: 20px;
+  --mf-shadow-soft: 0 1px 6px color-mix(in srgb, var(--foreground) 12%, transparent);
+  --mf-shadow-menu: 0 12px 24px color-mix(in srgb, var(--foreground) 18%, transparent);
+  --mf-shadow-press: 0 1px 2px color-mix(in srgb, var(--foreground) 14%, transparent);
+  color: var(--mf-text);
+  background-color: var(--mf-bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --accent: #262626;
+    --accent-foreground: #fafafa;
+    --background: #0a0a0a;
+    --border: #ffffff1a;
+    --card: #171717;
+    --card-foreground: #fafafa;
+    --destructive: #ff666999;
+    --foreground: #fafafa;
+    --input: #ffffff1a;
+    --muted: #262626;
+    --muted-foreground: #a3a3a3;
+    --popover: #171717;
+    --popover-foreground: #fafafa;
+    --primary: #e5e5e5;
+    --primary-foreground: #171717;
+    --ring: #737373;
+    --secondary: #262626;
+    --secondary-foreground: #fafafa;
+    --sidebar: #18181b;
+    --sidebar-accent: #2a2a30;
+    --sidebar-accent-foreground: #fafafa;
+    --sidebar-border: #ffffff1a;
+    --sidebar-foreground: #fafafa;
+    --sidebar-primary: #1447e6;
+    --sidebar-primary-foreground: #fafafa;
+    --sidebar-ring: #71717a;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+}
+
+body {
+  background: var(--mf-bg);
+  color: var(--mf-text);
+}
+
+.wysiwyg-editor h1,
+.wysiwyg-editor h2,
+.wysiwyg-editor h3,
+.wysiwyg-editor h4,
+.wysiwyg-editor h5,
+.wysiwyg-editor h6 {
+  margin: 1.15rem 0 0.65rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.wysiwyg-editor h1 {
+  font-size: 1.45rem;
+}
+
+.wysiwyg-editor h2 {
+  font-size: 1.25rem;
+}
+
+.wysiwyg-editor p {
+  margin: 0.6rem 0;
+}
+
+.wysiwyg-editor ul,
+.wysiwyg-editor ol {
+  margin: 0.6rem 0;
+  padding-left: 1.35rem;
+}
+
+.wysiwyg-editor li {
+  margin: 0.28rem 0;
+}
+
+.wysiwyg-editor blockquote {
+  margin: 0.85rem 0;
+  border-left: 3px solid var(--mf-quote-border);
+  background: var(--mf-quote-bg);
+  padding: 0.55rem 0.8rem;
+  color: var(--mf-text);
+}
+
+.wysiwyg-editor pre {
+  margin: 0.8rem 0;
+  overflow-x: auto;
+  border-radius: 8px;
+  background: var(--mf-code-bg);
+  color: var(--mf-code-text);
+  padding: 0.75rem 0.9rem;
+  font-family: "JetBrains Mono", "Cascadia Code", "Consolas", monospace;
+  font-size: 0.82rem;
+}
+
+.wysiwyg-editor code {
+  border-radius: 4px;
+  background: var(--mf-surface-muted);
+  padding: 0.1rem 0.3rem;
+  font-family: "JetBrains Mono", "Cascadia Code", "Consolas", monospace;
+  font-size: 0.8rem;
+}
+
+.wysiwyg-editor pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.wysiwyg-editor table {
+  margin: 0.9rem 0;
+  border-collapse: collapse;
+  width: 100%;
+  table-layout: fixed;
+}
+
+.wysiwyg-editor th,
+.wysiwyg-editor td {
+  border: 1px solid var(--mf-border-soft);
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.wysiwyg-editor th {
+  background: var(--mf-surface-muted);
+  font-weight: 600;
+}
