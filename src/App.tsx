@@ -21,6 +21,7 @@ import {
   FileText,
   Folder,
   FolderOpen,
+  FolderX,
   Heading1,
   Heading2,
   Italic,
@@ -29,13 +30,11 @@ import {
   ListOrdered,
   LogIn,
   LogOut,
-  PlugZap,
   Quote,
   Redo2,
   RefreshCw,
   Save,
   Settings2,
-  SlidersHorizontal,
   Table2,
   Undo2,
 } from 'lucide-react'
@@ -324,7 +323,7 @@ function loadStoredConfig() {
       username: (parsed.username ?? '').trim(),
       password: parsed.password ?? '',
     }
-    if (!config.url || !config.username || !config.password) {
+    if (!config.url) {
       return null
     }
     return config
@@ -702,6 +701,10 @@ function App() {
   const canUseEditorActions = canEditDocument && !busy
   const rootPath = normalizeRootPath(config?.rootPath ?? draftConfig.rootPath ?? DEFAULT_ROOT_PATH)
   const folderTree = useMemo(() => buildFolderTree(files, directories, rootPath), [files, directories, rootPath])
+  const sidebarStatusLabel = isConnected ? config?.url || '已连接 WebDAV' : busy ? '连接中...' : '未连接 WebDAV'
+  const sidebarStatusDotClass = isConnected ? 'text-[var(--mf-success)]' : busy ? 'text-[#F59E0B]' : 'text-[#94A3B8]'
+  const sidebarStatusTextClass = isConnected ? 'text-[#4B5563]' : busy ? 'text-[#9A3412]' : 'text-[#6B7280]'
+  const sidebarTreeContainerStyle = { boxShadow: '0 1px 6px rgba(0, 0, 0, 0.08)' } as const
 
   const isFolderOpen = useCallback((fullPath: string) => expandedFolders[fullPath] ?? true, [expandedFolders])
 
@@ -886,17 +889,23 @@ function App() {
         password: inputConfig.password,
       }
 
-      if (!nextConfig.url || !nextConfig.username || !nextConfig.password) {
-        notifyError('请先填写 URL / 用户名 / 密码')
+      if (!nextConfig.url) {
+        notifyError('请先填写 URL')
         return false
       }
 
       setBusy(true)
       try {
-        const nextClient = createClient(nextConfig.url, {
-          password: nextConfig.password,
-          username: nextConfig.username,
-        })
+        const hasCredentials = Boolean(nextConfig.username || nextConfig.password)
+        const nextClient = createClient(
+          nextConfig.url,
+          hasCredentials
+            ? {
+                password: nextConfig.password,
+                username: nextConfig.username,
+              }
+            : undefined,
+        )
 
         const snapshot = await listRemote(nextClient, nextConfig)
         setClient(nextClient)
@@ -1061,6 +1070,38 @@ function App() {
       setWysiwygSyncVersion((prev) => prev + 1)
     }
   }, [editorMode, setContentWithHistory])
+
+  useEffect(() => {
+    const onKeydown = (event: KeyboardEvent) => {
+      const hasModifier = event.ctrlKey || event.metaKey
+      if (!hasModifier || event.altKey) {
+        return
+      }
+
+      const key = event.key.toLowerCase()
+      if (key === 's') {
+        if (!canUseEditorActions) {
+          return
+        }
+        event.preventDefault()
+        void onSave()
+        return
+      }
+
+      if (key === 'z' && !event.shiftKey) {
+        if (!canUseEditorActions) {
+          return
+        }
+        event.preventDefault()
+        onUndo()
+      }
+    }
+
+    window.addEventListener('keydown', onKeydown)
+    return () => {
+      window.removeEventListener('keydown', onKeydown)
+    }
+  }, [canUseEditorActions, onSave, onUndo])
 
   const insertAroundSelection = useCallback(
     (prefix: string, suffix: string, placeholder: string) => {
@@ -1533,7 +1574,7 @@ function App() {
     <div className="h-full w-full bg-[var(--mf-bg)] text-[var(--mf-text)]">
       <div className="flex h-full w-full overflow-hidden">
         <aside
-          className={`h-full border-r border-[var(--mf-border)] bg-[var(--mf-sidebar-bg)] transition-[width] duration-200 ${
+          className={`h-full border-r border-[var(--mf-border)] transition-[width] duration-200 ${
             sidebarCollapsed ? 'w-16' : 'w-64'
           }`}
         >
@@ -1542,8 +1583,10 @@ function App() {
               <div className={`flex h-8 items-center ${sidebarCollapsed ? 'justify-center' : 'justify-between'} gap-2`}>
                 {sidebarCollapsed ? null : (
                   <div className="flex min-w-0 items-center gap-1.5">
-                    <span className="text-[11px] font-semibold text-[var(--mf-success)]">●</span>
-                    <span className="truncate text-xs text-[var(--mf-muted-strong)]">{config?.url || 'WebDAV Files'}</span>
+                    <span className={`text-[11px] font-semibold ${sidebarStatusDotClass}`}>●</span>
+                    <span className={`truncate text-xs ${sidebarStatusTextClass}`}>
+                      {sidebarStatusLabel}
+                    </span>
                   </div>
                 )}
                 <Button
@@ -1578,34 +1621,42 @@ function App() {
                   </Button>
                 </div>
               ) : isConnected ? (
-                <div className="rounded-[var(--mf-radius-lg)] border border-[var(--mf-border)] bg-[var(--mf-surface)] p-2 shadow-[var(--mf-shadow-soft)]">
-                  <div
-                    className="rounded-[var(--mf-radius-md)] px-2 py-1.5"
-                    onContextMenu={(event) => openContextMenu(event, rootPath, 'root')}
-                  >
-                    <div className="flex items-center gap-1.5 text-xs text-[var(--mf-muted)]">
-                      <Folder className="h-3.5 w-3.5 text-[var(--mf-muted)]" />
-                      <span className="truncate">根目录：{rootPath}</span>
+                <div
+                  className="h-full rounded-[10px] border border-[#E5E7EB] bg-[#FFFFFF] p-2"
+                  style={sidebarTreeContainerStyle}
+                  onContextMenu={(event) => openContextMenu(event, rootPath, 'root')}
+                >
+                  <div className="flex items-start justify-between gap-2 rounded-[var(--mf-radius-md)] px-2 py-1.5">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5 text-xs text-[var(--mf-muted)]">
+                        <Folder className="h-3.5 w-3.5 text-[var(--mf-muted)]" />
+                        <span className="truncate">根目录：{rootPath}</span>
+                      </div>
+                      <p className="mt-1 text-[11px] text-[var(--mf-muted)]">右键可新建、重命名、删除、刷新</p>
                     </div>
-                    <p className="mt-1 text-[11px] text-[var(--mf-muted)]">右键可新建、重命名、删除、刷新</p>
+                    <Button
+                      variant="toolbar"
+                      size="iconCompact"
+                      className="shrink-0"
+                      onClick={() => void onRefresh()}
+                      disabled={busy || !isConnected}
+                      title="刷新目录"
+                      aria-label="刷新目录"
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${busy ? 'animate-spin' : ''}`} />
+                    </Button>
                   </div>
-                  <div className="mt-1 space-y-1" onContextMenu={(event) => openContextMenu(event, rootPath, 'directory')}>
+                  <div className="mt-1 space-y-1">
                     {renderTree(folderTree, 0)}
                   </div>
                 </div>
               ) : (
-                <div className="flex h-full flex-col items-center justify-center gap-4 px-3 text-center">
-                  <div className="rounded-full bg-[var(--mf-surface-muted)] p-2.5">
-                    <PlugZap className="h-4 w-4 text-[var(--mf-muted)]" />
+                <div className="h-full rounded-[10px] border border-[#E5E7EB] bg-[#FFFFFF] p-3" style={sidebarTreeContainerStyle}>
+                  <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
+                    <FolderX className="h-5 w-5 text-[#94A3B8]" />
+                    <p className="text-[13px] font-medium text-[#475569]">未连接，无法读取文件</p>
+                    <p className="text-xs text-[#94A3B8]">连接 WebDAV 后显示文件树</p>
                   </div>
-                  <div className="space-y-1">
-                    <p className="text-xs font-medium text-[var(--mf-muted-strong)]">尚未连接 WebDAV</p>
-                    <p className="text-[11px] text-[var(--mf-muted)]">连接后将在这里显示 Markdown 文件列表</p>
-                  </div>
-                  <Button size="sm" variant="outline" onClick={() => setDialogOpen(true)}>
-                    <Settings2 className="h-3.5 w-3.5" />
-                    去连接
-                  </Button>
                 </div>
               )}
             </div>
@@ -1755,24 +1806,15 @@ function App() {
                 {editorMode === 'wysiwyg' ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </Button>
               <Button
-                variant="toolbarAccent"
+                variant="toolbar"
                 size="icon"
+                className="text-[var(--mf-accent)] hover:bg-[var(--mf-accent-pale)] hover:text-[var(--mf-accent-strong)] active:bg-[var(--mf-accent-pale-hover)] active:text-[var(--mf-ring)]"
                 title="保存"
                 aria-label="保存"
                 onClick={() => void onSave()}
                 disabled={!activeFilePath || busy}
               >
                 <Save className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="toolbar"
-                size="icon"
-                title="刷新目录"
-                aria-label="刷新目录"
-                onClick={() => void onRefresh()}
-                disabled={busy || !isConnected}
-              >
-                <RefreshCw className={`h-4 w-4 ${busy ? 'animate-spin' : ''}`} />
               </Button>
               <Dialog
                 open={dialogOpen}
@@ -1837,7 +1879,7 @@ function App() {
 
                         <div className="grid gap-[6px]">
                           <Label htmlFor="webdav-username" className="text-[11px] font-medium text-[#6B7280]">
-                            用户名
+                            用户名（可选）
                           </Label>
                           <Input
                             id="webdav-username"
@@ -1855,7 +1897,7 @@ function App() {
 
                         <div className="grid gap-[6px]">
                           <Label htmlFor="webdav-password" className="text-[11px] font-medium text-[#6B7280]">
-                            密码
+                            密码（可选）
                           </Label>
                           <div className="relative">
                             <Input

@@ -4,7 +4,6 @@ import 'sonner/dist/styles.css'
 function Toaster(props: ToasterProps) {
   return (
     <Sonner
-      closeButton
       position="bottom-right"
       richColors
       toastOptions={{
