@@ -1,13 +1,34 @@
 import {
-  type ClipboardEvent as ReactClipboardEvent,
   type MouseEvent as ReactMouseEvent,
   type ReactElement,
+  type ChangeEvent,
+  type ClipboardEvent as ReactClipboardEvent,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from 'react'
+import { Crepe } from '@milkdown/crepe'
+import { commandsCtx } from '@milkdown/kit/core'
+import { redoCommand, undoCommand } from '@milkdown/kit/plugin/history'
+import {
+  addBlockTypeCommand,
+  clearTextInCurrentBlockCommand,
+  codeBlockSchema,
+  createCodeBlockCommand,
+  listItemSchema,
+  toggleEmphasisCommand,
+  toggleStrongCommand,
+  wrapInBlockquoteCommand,
+  wrapInBlockTypeCommand,
+  wrapInBulletListCommand,
+  wrapInHeadingCommand,
+  wrapInOrderedListCommand,
+} from '@milkdown/kit/preset/commonmark'
+import { insertTableCommand } from '@milkdown/kit/preset/gfm'
+import { insert, replaceAll } from '@milkdown/kit/utils'
+import { Milkdown, useEditor } from '@milkdown/react'
 import {
   Bold,
   Calculator,
@@ -15,8 +36,10 @@ import {
   ChevronLeft,
   ChevronRight,
   Code2,
+  Download,
   Eye,
   EyeOff,
+  File as FileIcon,
   FilePenLine,
   FileText,
   Folder,
@@ -24,6 +47,7 @@ import {
   FolderX,
   Heading1,
   Heading2,
+  Image as ImageIcon,
   Italic,
   List,
   ListChecks,
@@ -37,6 +61,8 @@ import {
   Settings2,
   Table2,
   Undo2,
+  Paperclip,
+  Video as VideoIcon,
 } from 'lucide-react'
 import { createClient, type WebDAVClient } from 'webdav'
 
@@ -44,14 +70,30 @@ import { Button } from '@/components/ui/button'
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
+  DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
+import {
+  buildAttachmentMarkdown,
+  buildAttachmentTarget,
+  type AttachmentSettings,
+  type AttachmentStorageMode,
+  type AttachmentLinkFormat,
+  DEFAULT_ATTACHMENT_SETTINGS,
+  normalizeAttachmentSettings,
+  resolveMarkdownLinkToDavPath,
+  sanitizeAttachmentFolderName,
+} from '@/lib/attachments'
 import { toast } from 'sonner'
+import '@milkdown/crepe/theme/common/style.css'
+import '@milkdown/crepe/theme/frame.css'
 
 type DavConfig = {
+  attachments: AttachmentSettings
   url: string
   username: string
   password: string
@@ -64,7 +106,10 @@ type DavListItem = {
   type: 'file' | 'directory'
 }
 
-type MarkdownFile = {
+type RemoteFileKind = 'markdown' | 'text' | 'image' | 'video' | 'audio' | 'pdf' | 'other'
+
+type RemoteFile = {
+  kind: RemoteFileKind
   name: string
   path: string
 }
@@ -73,12 +118,23 @@ type FolderNode = {
   folders: FolderNode[]
   fullPath: string
   name: string
-  files: MarkdownFile[]
+  files: RemoteFile[]
 }
 
 type RemoteSnapshot = {
   directories: string[]
-  files: MarkdownFile[]
+  files: RemoteFile[]
+}
+
+type PreviewFileKind = 'text' | 'image' | 'video' | 'audio' | 'pdf'
+
+type PreviewDialogState = {
+  error: string
+  file: RemoteFile
+  kind: PreviewFileKind
+  loading: boolean
+  objectUrl: string
+  textContent: string
 }
 
 type EditorMode = 'wysiwyg' | 'source'
@@ -97,6 +153,16 @@ type ToolbarAction =
   | 'task'
   | 'math'
 
+type UploadAttachmentResult = {
+  davPath: string
+  link: string
+}
+
+type WysiwygEditorApi = {
+  applyToolbarAction: (action: ToolbarAction) => boolean
+  insertMarkdown: (snippet: string) => boolean
+}
+
 type ContextKind = 'file' | 'directory' | 'root'
 
 type ContextMenuState = {
@@ -111,8 +177,66 @@ const DEFAULT_ROOT_PATH = '/'
 const DEFAULT_MARKDOWN = '# 会议记录\n\n- WebDAV 已连接\n\n- 今日目标：编辑 markdown 文件并同步到云端\n'
 const MENU_WIDTH = 220
 const MENU_HEIGHT = 250
+const MARKDOWN_FILE_EXTENSIONS = new Set(['md', 'markdown'])
+const TEXT_FILE_EXTENSIONS = new Set([
+  'txt',
+  'text',
+  'log',
+  'json',
+  'yaml',
+  'yml',
+  'xml',
+  'html',
+  'htm',
+  'css',
+  'js',
+  'jsx',
+  'ts',
+  'tsx',
+  'csv',
+  'ini',
+  'conf',
+  'sh',
+  'py',
+  'java',
+  'c',
+  'cpp',
+  'h',
+  'hpp',
+  'sql',
+  'toml',
+  'env',
+])
+const IMAGE_FILE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'])
+const VIDEO_FILE_EXTENSIONS = new Set(['mp4', 'webm', 'ogv', 'mov', 'm4v', 'mkv'])
+const AUDIO_FILE_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'])
+const MIME_TYPE_BY_EXTENSION: Record<string, string> = {
+  aac: 'audio/aac',
+  avif: 'image/avif',
+  bmp: 'image/bmp',
+  flac: 'audio/flac',
+  gif: 'image/gif',
+  ico: 'image/x-icon',
+  jpeg: 'image/jpeg',
+  jpg: 'image/jpeg',
+  m4v: 'video/mp4',
+  m4a: 'audio/mp4',
+  mkv: 'video/x-matroska',
+  mov: 'video/quicktime',
+  mp3: 'audio/mpeg',
+  mp4: 'video/mp4',
+  ogg: 'audio/ogg',
+  ogv: 'video/ogg',
+  pdf: 'application/pdf',
+  png: 'image/png',
+  svg: 'image/svg+xml',
+  wav: 'audio/wav',
+  webm: 'video/webm',
+  webp: 'image/webp',
+}
 
 const EMPTY_CONFIG: DavConfig = {
+  attachments: DEFAULT_ATTACHMENT_SETTINGS,
   rootPath: DEFAULT_ROOT_PATH,
   url: '',
   username: '',
@@ -121,6 +245,14 @@ const EMPTY_CONFIG: DavConfig = {
 
 function normalizeUrl(url: string) {
   return url.trim().replace(/\/+$/, '')
+}
+
+function ensureDavBaseUrl(url: string) {
+  const normalized = normalizeUrl(url)
+  if (!normalized) {
+    return normalized
+  }
+  return normalized.endsWith('/') ? normalized : `${normalized}/`
 }
 
 function normalizeRootPath(path: string) {
@@ -137,6 +269,62 @@ function normalizeDavPath(path: string) {
     return '/'
   }
   return `/${trimmed.replace(/^\/+/, '').replace(/\/+$/, '')}`
+}
+
+function toClientDavPath(path: string) {
+  const normalizedPath = normalizeDavPath(path)
+  if (normalizedPath === '/') {
+    return ''
+  }
+  return normalizedPath.replace(/^\/+/, '')
+}
+
+function toDavPathname(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return '/'
+  }
+
+  const decoded = (() => {
+    try {
+      return decodeURIComponent(trimmed)
+    } catch {
+      return trimmed
+    }
+  })()
+
+  try {
+    return new URL(decoded, 'http://localhost').pathname || '/'
+  } catch {
+    return decoded
+  }
+}
+
+function getRemoteBasePath(url: string) {
+  try {
+    return normalizeDavPath(new URL(url).pathname || '/')
+  } catch {
+    return '/'
+  }
+}
+
+function toAppDavPath(remotePath: string, remoteBasePath: string) {
+  const normalizedPath = normalizeDavPath(toDavPathname(remotePath))
+  const normalizedBasePath = normalizeDavPath(remoteBasePath)
+
+  if (normalizedBasePath === '/') {
+    return normalizedPath
+  }
+
+  if (normalizedPath === normalizedBasePath) {
+    return '/'
+  }
+
+  if (normalizedPath.startsWith(`${normalizedBasePath}/`)) {
+    return normalizeDavPath(normalizedPath.slice(normalizedBasePath.length))
+  }
+
+  return normalizedPath
 }
 
 function joinDavPath(basePath: string, segment: string) {
@@ -165,6 +353,198 @@ function parentDavPath(path: string) {
 
 function getBaseName(path: string) {
   return normalizeDavPath(path).split('/').filter(Boolean).pop() ?? '/'
+}
+
+function getFileExtension(path: string) {
+  const baseName = getBaseName(path).toLowerCase()
+  const dotIndex = baseName.lastIndexOf('.')
+  if (dotIndex <= 0 || dotIndex >= baseName.length - 1) {
+    return ''
+  }
+  return baseName.slice(dotIndex + 1)
+}
+
+function inferRemoteFileKind(path: string): RemoteFileKind {
+  const extension = getFileExtension(path)
+
+  if (MARKDOWN_FILE_EXTENSIONS.has(extension)) {
+    return 'markdown'
+  }
+  if (TEXT_FILE_EXTENSIONS.has(extension)) {
+    return 'text'
+  }
+  if (IMAGE_FILE_EXTENSIONS.has(extension)) {
+    return 'image'
+  }
+  if (VIDEO_FILE_EXTENSIONS.has(extension)) {
+    return 'video'
+  }
+  if (AUDIO_FILE_EXTENSIONS.has(extension)) {
+    return 'audio'
+  }
+  if (extension === 'pdf') {
+    return 'pdf'
+  }
+
+  return 'other'
+}
+
+function toPreviewFileKind(kind: RemoteFileKind): PreviewFileKind | null {
+  if (kind === 'text' || kind === 'image' || kind === 'video' || kind === 'audio' || kind === 'pdf') {
+    return kind
+  }
+  return null
+}
+
+function getMimeTypeForFile(path: string, kind: PreviewFileKind) {
+  const extension = getFileExtension(path)
+  const byExtension = MIME_TYPE_BY_EXTENSION[extension]
+  if (byExtension) {
+    return byExtension
+  }
+
+  if (kind === 'image') {
+    return 'image/*'
+  }
+  if (kind === 'video') {
+    return 'video/*'
+  }
+  if (kind === 'audio') {
+    return 'audio/*'
+  }
+  if (kind === 'pdf') {
+    return 'application/pdf'
+  }
+  return 'text/plain'
+}
+
+function getPreviewTypeLabel(kind: PreviewFileKind) {
+  if (kind === 'text') {
+    return '文本'
+  }
+  if (kind === 'image') {
+    return '图片'
+  }
+  if (kind === 'video') {
+    return '视频'
+  }
+  if (kind === 'audio') {
+    return '音频'
+  }
+  return 'PDF'
+}
+
+function extractMarkdownLinkTargets(markdown: string) {
+  const targets: string[] = []
+  const inlineLinkPattern = /!?\[[^\]]*]\(([^)\n]+)\)/g
+
+  for (const match of markdown.matchAll(inlineLinkPattern)) {
+    const rawValue = match[1]?.trim()
+    if (!rawValue) {
+      continue
+    }
+
+    let target = rawValue
+    if (target.startsWith('<')) {
+      const closingIndex = target.indexOf('>')
+      if (closingIndex > 0) {
+        target = target.slice(1, closingIndex).trim()
+      }
+    } else {
+      const firstSpace = target.search(/\s/)
+      if (firstSpace > 0) {
+        target = target.slice(0, firstSpace)
+      }
+    }
+
+    if (target) {
+      targets.push(target)
+    }
+  }
+
+  return targets
+}
+
+function resolveAttachmentLinkToDavPath(link: string, activeMarkdownPath: string, baseUrl: string) {
+  const resolved = resolveMarkdownLinkToDavPath(link, activeMarkdownPath)
+  if (resolved) {
+    return normalizeDavPath(resolved)
+  }
+
+  const raw = link.trim()
+  if (!raw || raw.startsWith('#')) {
+    return null
+  }
+
+  try {
+    const linkUrl = new URL(raw)
+    const base = new URL(ensureDavBaseUrl(baseUrl))
+    if (linkUrl.origin !== base.origin) {
+      return null
+    }
+
+    const remoteBasePath = getRemoteBasePath(baseUrl)
+    return normalizeDavPath(toAppDavPath(linkUrl.pathname, remoteBasePath))
+  } catch {
+    return null
+  }
+}
+
+function isManagedAttachmentFilePath(path: string, settings: AttachmentSettings, rootPath: string) {
+  const normalizedPath = normalizeDavPath(path)
+  const normalizedRoot = normalizeRootPath(rootPath)
+  if (!isPathInsideRoot(normalizedPath, normalizedRoot)) {
+    return false
+  }
+
+  const folderName = sanitizeAttachmentFolderName(settings.folderName)
+  const segments = getRelativePath(normalizedPath, normalizedRoot).split('/').filter(Boolean)
+  if (segments.length === 0) {
+    return false
+  }
+
+  if (settings.storageMode === 'root_attachments') {
+    return segments.length >= 2 && segments[0] === folderName
+  }
+
+  if (settings.storageMode === 'same_dir_assets') {
+    for (let i = 0; i < segments.length; i += 1) {
+      if (segments[i] === folderName && i <= segments.length - 3) {
+        return true
+      }
+    }
+    return false
+  }
+
+  for (let i = 0; i < segments.length - 1; i += 1) {
+    if (segments[i].endsWith('.assets')) {
+      return true
+    }
+  }
+  return false
+}
+
+function pickMarkdownTargetPath(files: RemoteFile[], preferredPath?: string, currentPath?: string) {
+  const markdownPaths = files.filter((item) => item.kind === 'markdown').map((item) => item.path)
+  if (markdownPaths.length === 0) {
+    return ''
+  }
+
+  if (preferredPath) {
+    const normalizedPreferred = normalizeDavPath(preferredPath)
+    if (markdownPaths.includes(normalizedPreferred)) {
+      return normalizedPreferred
+    }
+  }
+
+  if (currentPath) {
+    const normalizedCurrent = normalizeDavPath(currentPath)
+    if (markdownPaths.includes(normalizedCurrent)) {
+      return normalizedCurrent
+    }
+  }
+
+  return markdownPaths[0]
 }
 
 function isPathInsideRoot(path: string, rootPath: string) {
@@ -197,7 +577,7 @@ function getRelativePath(fullPath: string, rootPath: string) {
   return normalizedPath.replace(/^\//, '')
 }
 
-function buildFolderTree(files: MarkdownFile[], directories: string[], rootPath: string): FolderNode {
+function buildFolderTree(files: RemoteFile[], directories: string[], rootPath: string): FolderNode {
   const normalizedRoot = normalizeRootPath(rootPath)
   const root: FolderNode = {
     folders: [],
@@ -242,6 +622,7 @@ function buildFolderTree(files: MarkdownFile[], directories: string[], rootPath:
     const folderPath = parentDavPath(file.path)
     const target = ensureFolder(folderPath)
     target.files.push({
+      kind: file.kind,
       name: file.name,
       path: normalizeDavPath(file.path),
     })
@@ -310,6 +691,146 @@ function shouldFallbackCreateFileForAList(error: unknown) {
   return /if-none-match|precondition/i.test(message)
 }
 
+function isExternalResourceUrl(url: string) {
+  return /^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(url) || url.startsWith('//')
+}
+
+function getImageExtensionFromMimeType(mimeType: string) {
+  const normalized = mimeType.trim().toLowerCase()
+  if (!normalized.startsWith('image/')) {
+    return 'png'
+  }
+
+  const subtype = normalized.slice('image/'.length).split(';')[0]?.trim() ?? ''
+  if (!subtype) {
+    return 'png'
+  }
+
+  if (subtype === 'jpeg') {
+    return 'jpg'
+  }
+  if (subtype === 'svg+xml') {
+    return 'svg'
+  }
+  if (subtype === 'vnd.microsoft.icon' || subtype === 'x-icon') {
+    return 'ico'
+  }
+
+  return subtype.replace(/[^a-z0-9.+-]/g, '') || 'png'
+}
+
+function formatPasteImageTimestamp(date = new Date()) {
+  const yyyy = date.getFullYear().toString().padStart(4, '0')
+  const mm = `${date.getMonth() + 1}`.padStart(2, '0')
+  const dd = `${date.getDate()}`.padStart(2, '0')
+  const hh = `${date.getHours()}`.padStart(2, '0')
+  const min = `${date.getMinutes()}`.padStart(2, '0')
+  const ss = `${date.getSeconds()}`.padStart(2, '0')
+  return `${yyyy}${mm}${dd}${hh}${min}${ss}`
+}
+
+function normalizePastedImageFile(file: File, index: number) {
+  const safeName = file.name.trim().replace(/[\\/\0]+/g, '-')
+  const ext = getImageExtensionFromMimeType(file.type)
+  const withExtension = safeName
+    ? /\.[a-z0-9]{1,16}$/i.test(safeName)
+      ? safeName
+      : `${safeName}.${ext}`
+    : `pasted-image-${formatPasteImageTimestamp()}-${index + 1}.${ext}`
+
+  if (withExtension === file.name) {
+    return file
+  }
+
+  try {
+    return new File([file], withExtension, {
+      lastModified: Date.now(),
+      type: file.type || `image/${ext}`,
+    })
+  } catch {
+    return file
+  }
+}
+
+function getClipboardImageFiles(clipboardData: DataTransfer | null) {
+  if (!clipboardData) {
+    return [] as File[]
+  }
+
+  const fromItems: File[] = []
+  for (const item of Array.from(clipboardData.items ?? [])) {
+    if (item.kind !== 'file' || !item.type.startsWith('image/')) {
+      continue
+    }
+    const file = item.getAsFile()
+    if (!file) {
+      continue
+    }
+    fromItems.push(normalizePastedImageFile(file, fromItems.length))
+  }
+  if (fromItems.length > 0) {
+    return fromItems
+  }
+
+  const fromFiles: File[] = []
+  for (const file of Array.from(clipboardData.files ?? [])) {
+    if (!file.type.startsWith('image/')) {
+      continue
+    }
+    fromFiles.push(normalizePastedImageFile(file, fromFiles.length))
+  }
+  return fromFiles
+}
+
+function toBlobPayload(data: unknown): BlobPart | null {
+  if (data instanceof ArrayBuffer) {
+    return data
+  }
+  if (typeof Blob !== 'undefined' && data instanceof Blob) {
+    return data
+  }
+
+  const value = data as { buffer?: ArrayBufferLike; byteLength?: number; byteOffset?: number } | null
+  if (value?.buffer && typeof value.byteLength === 'number') {
+    const offset = value.byteOffset ?? 0
+    const source = new Uint8Array(value.buffer, offset, value.byteLength)
+    const copy = new Uint8Array(source.byteLength)
+    copy.set(source)
+    return copy.buffer
+  }
+
+  return null
+}
+
+function revokeAllObjectUrls(urlMap: Map<string, string>) {
+  for (const url of urlMap.values()) {
+    URL.revokeObjectURL(url)
+  }
+  urlMap.clear()
+}
+
+function downloadBlob(blob: Blob, fileName: string) {
+  const objectUrl = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = objectUrl
+  anchor.download = fileName
+  anchor.rel = 'noopener'
+  document.body.appendChild(anchor)
+  anchor.click()
+  document.body.removeChild(anchor)
+  URL.revokeObjectURL(objectUrl)
+}
+
+function downloadObjectUrl(objectUrl: string, fileName: string) {
+  const anchor = document.createElement('a')
+  anchor.href = objectUrl
+  anchor.download = fileName
+  anchor.rel = 'noopener'
+  document.body.appendChild(anchor)
+  anchor.click()
+  document.body.removeChild(anchor)
+}
+
 function loadStoredConfig() {
   try {
     const raw = localStorage.getItem(CONFIG_KEY)
@@ -318,6 +839,7 @@ function loadStoredConfig() {
     }
     const parsed = JSON.parse(raw) as Partial<DavConfig>
     const config = {
+      attachments: normalizeAttachmentSettings(parsed.attachments as Partial<AttachmentSettings> | undefined),
       rootPath: normalizeRootPath(parsed.rootPath ?? DEFAULT_ROOT_PATH),
       url: normalizeUrl(parsed.url ?? ''),
       username: (parsed.username ?? '').trim(),
@@ -332,339 +854,209 @@ function loadStoredConfig() {
   }
 }
 
-function escapeHtml(value: string) {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
-
-function applyInlineMarkdown(value: string) {
-  const escaped = escapeHtml(value)
-
-  return escaped
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-    .replace(/\n/g, '<br />')
-}
-
-function markdownToHtml(markdown: string) {
-  const lines = markdown.replace(/\r\n?/g, '\n').split('\n')
-  const html: string[] = []
-
-  const isSpecialLine = (line: string) =>
-    /^(#{1,6}\s+|```|>|\d+\.\s+|- \[[ xX]\]\s+|[-*]\s+)/.test(line)
-
-  let index = 0
-  while (index < lines.length) {
-    const line = lines[index]
-
-    if (!line.trim()) {
-      index += 1
-      continue
-    }
-
-    if (/^```/.test(line)) {
-      index += 1
-      const codeLines: string[] = []
-      while (index < lines.length && !/^```/.test(lines[index])) {
-        codeLines.push(lines[index])
-        index += 1
-      }
-      if (index < lines.length && /^```/.test(lines[index])) {
-        index += 1
-      }
-      html.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`)
-      continue
-    }
-
-    const heading = line.match(/^(#{1,6})\s+(.+)$/)
-    if (heading) {
-      const level = heading[1].length
-      html.push(`<h${level}>${applyInlineMarkdown(heading[2])}</h${level}>`)
-      index += 1
-      continue
-    }
-
-    if (/^>\s?/.test(line)) {
-      const quoteLines: string[] = []
-      while (index < lines.length && /^>\s?/.test(lines[index])) {
-        quoteLines.push(lines[index].replace(/^>\s?/, ''))
-        index += 1
-      }
-      html.push(`<blockquote><p>${applyInlineMarkdown(quoteLines.join('\n'))}</p></blockquote>`)
-      continue
-    }
-
-    if (line.includes('|') && index + 1 < lines.length && /^\s*\|?[:\- ]+\|[:\-| ]+\s*$/.test(lines[index + 1])) {
-      const headerCells = line
-        .split('|')
-        .map((item) => item.trim())
-        .filter(Boolean)
-      index += 2
-      const bodyRows: string[][] = []
-      while (index < lines.length && lines[index].includes('|') && lines[index].trim()) {
-        const row = lines[index]
-          .split('|')
-          .map((item) => item.trim())
-          .filter(Boolean)
-        bodyRows.push(row)
-        index += 1
-      }
-
-      const head = `<thead><tr>${headerCells.map((item) => `<th>${applyInlineMarkdown(item)}</th>`).join('')}</tr></thead>`
-      const body = bodyRows.length
-        ? `<tbody>${bodyRows
-            .map((row) => `<tr>${row.map((item) => `<td>${applyInlineMarkdown(item)}</td>`).join('')}</tr>`)
-            .join('')}</tbody>`
-        : ''
-      html.push(`<table>${head}${body}</table>`)
-      continue
-    }
-
-    if (/^- \[[ xX]\]\s+/.test(line) || /^[-*]\s+/.test(line)) {
-      const listItems: string[] = []
-      while (index < lines.length && (/^- \[[ xX]\]\s+/.test(lines[index]) || /^[-*]\s+/.test(lines[index]))) {
-        listItems.push(lines[index].replace(/^(- \[[ xX]\] |[-*] )/, ''))
-        index += 1
-      }
-      html.push(`<ul>${listItems.map((item) => `<li>${applyInlineMarkdown(item)}</li>`).join('')}</ul>`)
-      continue
-    }
-
-    if (/^\d+\.\s+/.test(line)) {
-      const listItems: string[] = []
-      while (index < lines.length && /^\d+\.\s+/.test(lines[index])) {
-        listItems.push(lines[index].replace(/^\d+\.\s+/, ''))
-        index += 1
-      }
-      html.push(`<ol>${listItems.map((item) => `<li>${applyInlineMarkdown(item)}</li>`).join('')}</ol>`)
-      continue
-    }
-
-    const paragraph: string[] = []
-    while (index < lines.length && lines[index].trim() && !isSpecialLine(lines[index])) {
-      paragraph.push(lines[index])
-      index += 1
-    }
-    html.push(`<p>${applyInlineMarkdown(paragraph.join('\n'))}</p>`)
-  }
-
-  return html.join('')
-}
-
-function inlineNodeToMarkdown(node: Node): string {
-  if (node.nodeType === Node.TEXT_NODE) {
-    return node.textContent ?? ''
-  }
-
-  if (!(node instanceof HTMLElement)) {
-    return ''
-  }
-
-  const children = Array.from(node.childNodes).map((child) => inlineNodeToMarkdown(child)).join('')
-
-  switch (node.tagName) {
-    case 'BR':
-      return '\n'
-    case 'STRONG':
-    case 'B':
-      return `**${children}**`
-    case 'EM':
-    case 'I':
-      return `*${children}*`
-    case 'CODE':
-      return `\`${children}\``
-    case 'A': {
-      const href = node.getAttribute('href') ?? ''
-      if (!href) {
-        return children
-      }
-      return `[${children || href}](${href})`
-    }
-    default:
-      return children
-  }
-}
-
-function blockNodeToMarkdown(node: Node): string {
-  if (node.nodeType === Node.TEXT_NODE) {
-    return (node.textContent ?? '').trim()
-  }
-
-  if (!(node instanceof HTMLElement)) {
-    return ''
-  }
-
-  const inline = () => Array.from(node.childNodes).map((child) => inlineNodeToMarkdown(child)).join('').trim()
-
-  switch (node.tagName) {
-    case 'H1':
-      return `# ${inline()}`
-    case 'H2':
-      return `## ${inline()}`
-    case 'H3':
-      return `### ${inline()}`
-    case 'H4':
-      return `#### ${inline()}`
-    case 'H5':
-      return `##### ${inline()}`
-    case 'H6':
-      return `###### ${inline()}`
-    case 'BLOCKQUOTE': {
-      const value = Array.from(node.childNodes)
-        .map((child) => blockNodeToMarkdown(child))
-        .join('\n')
-        .trim()
-      return value
-        .split('\n')
-        .filter(Boolean)
-        .map((line) => `> ${line}`)
-        .join('\n')
-    }
-    case 'UL': {
-      return Array.from(node.children)
-        .filter((child) => child.tagName === 'LI')
-        .map((child) => `- ${Array.from(child.childNodes).map((item) => inlineNodeToMarkdown(item)).join('').trim()}`)
-        .join('\n')
-    }
-    case 'OL': {
-      return Array.from(node.children)
-        .filter((child) => child.tagName === 'LI')
-        .map((child, index) => `${index + 1}. ${Array.from(child.childNodes).map((item) => inlineNodeToMarkdown(item)).join('').trim()}`)
-        .join('\n')
-    }
-    case 'PRE': {
-      const code = node.textContent?.replace(/\n$/, '') ?? ''
-      return `\`\`\`\n${code}\n\`\`\``
-    }
-    case 'TABLE': {
-      const rows = Array.from(node.querySelectorAll('tr')).map((row) =>
-        Array.from(row.children).map((cell) => cell.textContent?.trim() ?? ''),
-      )
-      if (rows.length === 0) {
-        return ''
-      }
-      const headers = rows[0]
-      const divider = headers.map(() => '---')
-      const body = rows.slice(1)
-
-      const lines = [
-        `| ${headers.join(' | ')} |`,
-        `| ${divider.join(' | ')} |`,
-        ...body.map((row) => `| ${row.join(' | ')} |`),
-      ]
-      return lines.join('\n')
-    }
-    case 'P':
-    case 'DIV':
-    case 'SECTION':
-    case 'ARTICLE':
-      return inline()
-    default: {
-      const blocks = Array.from(node.childNodes).map((child) => blockNodeToMarkdown(child)).filter(Boolean)
-      if (blocks.length > 0) {
-        return blocks.join('\n')
-      }
-      return inline()
-    }
-  }
-}
-
-function htmlToMarkdown(html: string) {
-  if (typeof window === 'undefined') {
-    return html
-  }
-
-  const parser = new DOMParser()
-  const doc = parser.parseFromString(`<div id="editor-root">${html}</div>`, 'text/html')
-  const root = doc.getElementById('editor-root')
-  if (!root) {
-    return ''
-  }
-
-  return Array.from(root.childNodes)
-    .map((node) => blockNodeToMarkdown(node).trim())
-    .filter(Boolean)
-    .join('\n\n')
-    .replace(/\n{3,}/g, '\n\n')
-}
-
 type WysiwygMarkdownEditorProps = {
   editable: boolean
   markdown: string
+  onApiChange: (api: WysiwygEditorApi | null) => void
   onChange: (nextValue: string) => void
-  onHostChange: (node: HTMLDivElement | null) => void
+  onImageUpload: (file: File) => Promise<string>
+  onPasteCapture: (event: ReactClipboardEvent<HTMLDivElement>) => void
+  resolveImageSrc: (url: string) => Promise<string> | string
   syncVersion: number
 }
 
-function WysiwygMarkdownEditor({ editable, markdown, onChange, onHostChange, syncVersion }: WysiwygMarkdownEditorProps) {
-  const hostRef = useRef<HTMLDivElement | null>(null)
-  const ignoreInputRef = useRef(false)
+function WysiwygMarkdownEditor({
+  editable,
+  markdown,
+  onApiChange,
+  onChange,
+  onImageUpload,
+  onPasteCapture,
+  resolveImageSrc,
+  syncVersion,
+}: WysiwygMarkdownEditorProps) {
+  const crepeRef = useRef<Crepe | null>(null)
+  const onChangeRef = useRef(onChange)
+  const onImageUploadRef = useRef(onImageUpload)
+  const resolveImageSrcRef = useRef(resolveImageSrc)
+  const markdownRef = useRef(markdown)
+  const suppressChangeRef = useRef(false)
+  const pendingMarkdownRef = useRef<string | null>(null)
+  const flushFrameRef = useRef<number | null>(null)
 
-  const setHost = useCallback(
-    (node: HTMLDivElement | null) => {
-      hostRef.current = node
-      onHostChange(node)
-    },
-    [onHostChange],
-  )
+  useEffect(() => {
+    onChangeRef.current = onChange
+  }, [onChange])
+
+  useEffect(() => {
+    onImageUploadRef.current = onImageUpload
+  }, [onImageUpload])
+
+  useEffect(() => {
+    resolveImageSrcRef.current = resolveImageSrc
+  }, [resolveImageSrc])
+
+  useEffect(() => {
+    markdownRef.current = markdown
+  }, [markdown])
 
   useEffect(
     () => () => {
-      onHostChange(null)
+      if (flushFrameRef.current !== null) {
+        cancelAnimationFrame(flushFrameRef.current)
+      }
     },
-    [onHostChange],
+    [],
+  )
+
+  useEditor(
+    (root) => {
+      const crepe = new Crepe({
+        featureConfigs: {
+          [Crepe.Feature.ImageBlock]: {
+            blockOnUpload: (file) => onImageUploadRef.current(file),
+            inlineOnUpload: (file) => onImageUploadRef.current(file),
+            onUpload: (file) => onImageUploadRef.current(file),
+            proxyDomURL: (url) => resolveImageSrcRef.current(url),
+          },
+        },
+        root,
+        defaultValue: markdownRef.current,
+      })
+
+      crepe.on((listener) => {
+        listener.markdownUpdated((_ctx, nextMarkdown) => {
+          if (suppressChangeRef.current || nextMarkdown === markdownRef.current) {
+            return
+          }
+          pendingMarkdownRef.current = nextMarkdown
+          if (flushFrameRef.current !== null) {
+            return
+          }
+          flushFrameRef.current = requestAnimationFrame(() => {
+            flushFrameRef.current = null
+            const pendingMarkdown = pendingMarkdownRef.current
+            if (!pendingMarkdown) {
+              return
+            }
+            pendingMarkdownRef.current = null
+            markdownRef.current = pendingMarkdown
+            onChangeRef.current(pendingMarkdown)
+          })
+        })
+      })
+
+      crepeRef.current = crepe
+      return crepe
+    },
+    [],
   )
 
   useEffect(() => {
-    const host = hostRef.current
-    if (!host) {
+    const crepe = crepeRef.current
+    const nextMarkdown = markdownRef.current
+    if (!crepe || crepe.getMarkdown() === nextMarkdown) {
       return
     }
-    ignoreInputRef.current = true
-    host.innerHTML = markdownToHtml(markdown)
+
+    suppressChangeRef.current = true
+    crepe.editor.action(replaceAll(nextMarkdown, true))
     requestAnimationFrame(() => {
-      ignoreInputRef.current = false
+      suppressChangeRef.current = false
     })
-  }, [markdown, syncVersion])
+  }, [syncVersion])
 
-  const onInput = useCallback(() => {
-    if (!editable) {
-      return
-    }
-    const host = hostRef.current
-    if (!host || ignoreInputRef.current) {
-      return
-    }
-    const nextMarkdown = htmlToMarkdown(host.innerHTML)
-    onChange(nextMarkdown)
-  }, [editable, onChange])
-
-  const onPaste = useCallback((event: ReactClipboardEvent<HTMLDivElement>) => {
-    if (!editable) {
-      return
-    }
-    event.preventDefault()
-    const plainText = event.clipboardData.getData('text/plain')
-    document.execCommand('insertText', false, plainText)
+  useEffect(() => {
+    crepeRef.current?.setReadonly(!editable)
   }, [editable])
 
+  const applyToolbarAction = useCallback((action: ToolbarAction) => {
+    const crepe = crepeRef.current
+    if (!crepe) {
+      return false
+    }
+
+    crepe.editor.action((ctx) => {
+      const commands = ctx.get(commandsCtx)
+
+      switch (action) {
+        case 'undo':
+          commands.call(undoCommand.key)
+          return
+        case 'redo':
+          commands.call(redoCommand.key)
+          return
+        case 'h1':
+          commands.call(wrapInHeadingCommand.key, 1)
+          return
+        case 'h2':
+          commands.call(wrapInHeadingCommand.key, 2)
+          return
+        case 'bold':
+          commands.call(toggleStrongCommand.key)
+          return
+        case 'italic':
+          commands.call(toggleEmphasisCommand.key)
+          return
+        case 'bullet':
+          commands.call(wrapInBulletListCommand.key)
+          return
+        case 'ordered':
+          commands.call(wrapInOrderedListCommand.key)
+          return
+        case 'quote':
+          commands.call(wrapInBlockquoteCommand.key)
+          return
+        case 'code':
+          commands.call(createCodeBlockCommand.key)
+          return
+        case 'table':
+          commands.call(insertTableCommand.key, { col: 3, row: 3 })
+          return
+        case 'task':
+          commands.call(clearTextInCurrentBlockCommand.key)
+          commands.call(wrapInBlockTypeCommand.key, {
+            attrs: { checked: false },
+            nodeType: listItemSchema.type(ctx),
+          })
+          return
+        case 'math':
+          commands.call(clearTextInCurrentBlockCommand.key)
+          commands.call(addBlockTypeCommand.key, {
+            attrs: { language: 'LaTex' },
+            nodeType: codeBlockSchema.type(ctx),
+          })
+          return
+      }
+    })
+
+    return true
+  }, [])
+
+  const insertMarkdownSnippet = useCallback((snippet: string) => {
+    const crepe = crepeRef.current
+    if (!crepe) {
+      return false
+    }
+    crepe.editor.action(insert(snippet))
+    return true
+  }, [])
+
+  useEffect(() => {
+    onApiChange({
+      applyToolbarAction,
+      insertMarkdown: insertMarkdownSnippet,
+    })
+
+    return () => {
+      onApiChange(null)
+    }
+  }, [applyToolbarAction, insertMarkdownSnippet, onApiChange])
+
   return (
-    <div
-      ref={setHost}
-      className={`wysiwyg-editor h-full overflow-auto p-6 text-sm leading-7 text-[var(--mf-text)] outline-none ${
-        editable ? '' : 'cursor-not-allowed bg-[var(--mf-surface-muted)] text-[var(--mf-muted)]'
-      }`}
-      contentEditable={editable}
-      suppressContentEditableWarning
-      onInput={onInput}
-      onPaste={onPaste}
-    />
+    <div className={`crepe-editor-shell h-full ${editable ? '' : 'crepe-editor-readonly'}`} onPasteCapture={onPasteCapture}>
+      <Milkdown />
+    </div>
   )
 }
 
@@ -672,33 +1064,48 @@ function App() {
   const initialStoredConfig = useMemo(() => loadStoredConfig(), [])
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [attachmentDialogOpen, setAttachmentDialogOpen] = useState(false)
   const [config, setConfig] = useState<DavConfig | null>(initialStoredConfig)
-  const [draftConfig, setDraftConfig] = useState<DavConfig>(initialStoredConfig ?? EMPTY_CONFIG)
+  const [draftConfig, setDraftConfig] = useState<DavConfig>(initialStoredConfig ?? { ...EMPTY_CONFIG })
+  const [draftAttachmentSettings, setDraftAttachmentSettings] = useState<AttachmentSettings>(
+    normalizeAttachmentSettings(initialStoredConfig?.attachments ?? EMPTY_CONFIG.attachments),
+  )
   const [showPassword, setShowPassword] = useState(false)
   const [rememberCredentials, setRememberCredentials] = useState(Boolean(initialStoredConfig))
   const [client, setClient] = useState<WebDAVClient | null>(null)
-  const [files, setFiles] = useState<MarkdownFile[]>([])
+  const [files, setFiles] = useState<RemoteFile[]>([])
   const [directories, setDirectories] = useState<string[]>([])
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({})
   const [activeFilePath, setActiveFilePath] = useState('')
+  const [previewDialog, setPreviewDialog] = useState<PreviewDialogState | null>(null)
   const [content, setContent] = useState(DEFAULT_MARKDOWN)
   const [status, setStatus] = useState('未连接 WebDAV')
   const [busy, setBusy] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
+  const [isUploadingAttachment, setIsUploadingAttachment] = useState(false)
+  const [isCleaningAttachments, setIsCleaningAttachments] = useState(false)
+  const [saveIconFlash, setSaveIconFlash] = useState(false)
   const [editorMode, setEditorMode] = useState<EditorMode>('wysiwyg')
   const [wysiwygSyncVersion, setWysiwygSyncVersion] = useState(0)
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
 
+  const attachmentInputRef = useRef<HTMLInputElement>(null)
   const sourceEditorRef = useRef<HTMLTextAreaElement>(null)
-  const wysiwygEditorRef = useRef<HTMLDivElement | null>(null)
+  const wysiwygApiRef = useRef<WysiwygEditorApi | null>(null)
   const contentRef = useRef(DEFAULT_MARKDOWN)
   const historyRef = useRef([DEFAULT_MARKDOWN])
   const historyIndexRef = useRef(0)
-  const warnedDepthFallbackRef = useRef(false)
   const warnedAListCreateFallbackRef = useRef(false)
+  const imagePreviewUrlMapRef = useRef(new Map<string, string>())
+  const imagePreviewPendingRef = useRef(new Map<string, Promise<string>>())
+  const previewObjectUrlRef = useRef<string | null>(null)
+  const previewRequestRef = useRef(0)
 
   const isConnected = client !== null
   const canEditDocument = isConnected && Boolean(activeFilePath)
   const canUseEditorActions = canEditDocument && !busy
+  const fileMap = useMemo(() => new Map(files.map((item) => [item.path, item])), [files])
+  const selectedFilePath = previewDialog?.file.path ?? activeFilePath
   const rootPath = normalizeRootPath(config?.rootPath ?? draftConfig.rootPath ?? DEFAULT_ROOT_PATH)
   const folderTree = useMemo(() => buildFolderTree(files, directories, rootPath), [files, directories, rootPath])
   const sidebarStatusLabel = isConnected ? config?.url || '已连接 WebDAV' : busy ? '连接中...' : '未连接 WebDAV'
@@ -749,7 +1156,7 @@ function App() {
 
   const buildRemoteSnapshot = useCallback((list: DavListItem[], normalizedRoot: string): RemoteSnapshot => {
     const directorySet = new Set<string>([normalizedRoot])
-    const markdownFileMap = new Map<string, MarkdownFile>()
+    const remoteFileMap = new Map<string, RemoteFile>()
 
     for (const item of list) {
       const normalizedPath = normalizeDavPath(item.filename)
@@ -762,11 +1169,8 @@ function App() {
         continue
       }
 
-      if (!/\.(md|markdown)$/i.test(normalizedPath)) {
-        continue
-      }
-
-      markdownFileMap.set(normalizedPath, {
+      remoteFileMap.set(normalizedPath, {
+        kind: inferRemoteFileKind(normalizedPath),
         name: item.basename ?? getBaseName(normalizedPath),
         path: normalizedPath,
       })
@@ -781,65 +1185,50 @@ function App() {
       }
     }
 
-    const markdownFiles = [...markdownFileMap.values()].sort((a, b) => a.path.localeCompare(b.path, 'zh-CN'))
+    const sortedFiles = [...remoteFileMap.values()].sort((a, b) => a.path.localeCompare(b.path, 'zh-CN'))
 
     return {
       directories: [...directorySet].sort((a, b) => a.localeCompare(b, 'zh-CN')),
-      files: markdownFiles,
+      files: sortedFiles,
     }
   }, [])
 
   const listRemote = useCallback(
     async (targetClient: WebDAVClient, targetConfig: DavConfig): Promise<RemoteSnapshot> => {
       const normalizedRoot = normalizeRootPath(targetConfig.rootPath)
+      const remoteBasePath = getRemoteBasePath(targetConfig.url)
+      const visited = new Set<string>()
+      const queue: string[] = [normalizedRoot]
+      const aggregate: DavListItem[] = []
 
-      try {
-        const result = await targetClient.getDirectoryContents(normalizedRoot, { deep: true })
-        const list = (Array.isArray(result) ? result : [result]) as DavListItem[]
-        return buildRemoteSnapshot(list, normalizedRoot)
-      } catch (error) {
-        if (!isMethodUnsupported(error)) {
-          throw error
+      while (queue.length > 0) {
+        const currentDirectory = queue.shift()
+        if (!currentDirectory || visited.has(currentDirectory)) {
+          continue
         }
+        visited.add(currentDirectory)
 
-        if (!warnedDepthFallbackRef.current) {
-          warnedDepthFallbackRef.current = true
-          toast.warning('检测到服务器不支持深度遍历，已切换兼容模式')
-        }
+        const partial = await targetClient.getDirectoryContents(toClientDavPath(currentDirectory), { deep: false })
+        const items = (Array.isArray(partial) ? partial : [partial]) as DavListItem[]
 
-        const visited = new Set<string>()
-        const queue: string[] = [normalizedRoot]
-        const aggregate: DavListItem[] = []
-
-        while (queue.length > 0) {
-          const currentDirectory = queue.shift()
-          if (!currentDirectory || visited.has(currentDirectory)) {
+        for (const item of items) {
+          const normalizedPath = toAppDavPath(item.filename, remoteBasePath)
+          if (!isPathInsideRoot(normalizedPath, normalizedRoot)) {
             continue
           }
-          visited.add(currentDirectory)
 
-          const partial = await targetClient.getDirectoryContents(currentDirectory)
-          const items = (Array.isArray(partial) ? partial : [partial]) as DavListItem[]
+          aggregate.push({
+            ...item,
+            filename: normalizedPath,
+          })
 
-          for (const item of items) {
-            const normalizedPath = normalizeDavPath(item.filename)
-            if (!isPathInsideRoot(normalizedPath, normalizedRoot)) {
-              continue
-            }
-
-            aggregate.push({
-              ...item,
-              filename: normalizedPath,
-            })
-
-            if (item.type === 'directory' && normalizedPath !== currentDirectory && !visited.has(normalizedPath)) {
-              queue.push(normalizedPath)
-            }
+          if (item.type === 'directory' && normalizedPath !== currentDirectory && !visited.has(normalizedPath)) {
+            queue.push(normalizedPath)
           }
         }
-
-        return buildRemoteSnapshot(aggregate, normalizedRoot)
       }
+
+      return buildRemoteSnapshot(aggregate, normalizedRoot)
     },
     [buildRemoteSnapshot],
   )
@@ -847,7 +1236,9 @@ function App() {
   const readFile = useCallback(
     async (targetClient: WebDAVClient, filePath: string) => {
       const normalizedPath = normalizeDavPath(filePath)
-      const fileText = (await targetClient.getFileContents(normalizedPath, { format: 'text' })) as string
+      const fileText = (await targetClient.getFileContents(toClientDavPath(normalizedPath), { format: 'text' })) as string
+      revokeAllObjectUrls(imagePreviewUrlMapRef.current)
+      imagePreviewPendingRef.current.clear()
       setActiveFilePath(normalizedPath)
       setContentWithHistory(fileText, { resetHistory: true })
       setWysiwygSyncVersion((prev) => prev + 1)
@@ -855,34 +1246,166 @@ function App() {
     [setContentWithHistory],
   )
 
+  const revokePreviewObjectUrl = useCallback(() => {
+    if (!previewObjectUrlRef.current) {
+      return
+    }
+    URL.revokeObjectURL(previewObjectUrlRef.current)
+    previewObjectUrlRef.current = null
+  }, [])
+
+  const closePreviewDialog = useCallback(() => {
+    previewRequestRef.current += 1
+    revokePreviewObjectUrl()
+    setPreviewDialog(null)
+  }, [revokePreviewObjectUrl])
+
+  const openPreviewFile = useCallback(
+    async (targetClient: WebDAVClient, file: RemoteFile) => {
+      const previewKind = toPreviewFileKind(file.kind)
+      if (!previewKind) {
+        notifyError(`暂不支持预览该文件类型：${file.name}`)
+        return
+      }
+
+      previewRequestRef.current += 1
+      const requestId = previewRequestRef.current
+      const normalizedPath = normalizeDavPath(file.path)
+      revokePreviewObjectUrl()
+
+      setPreviewDialog({
+        error: '',
+        file,
+        kind: previewKind,
+        loading: true,
+        objectUrl: '',
+        textContent: '',
+      })
+
+      try {
+        if (previewKind === 'text') {
+          const textContent = (await targetClient.getFileContents(toClientDavPath(normalizedPath), { format: 'text' })) as string
+          if (previewRequestRef.current !== requestId) {
+            return
+          }
+          setPreviewDialog({
+            error: '',
+            file,
+            kind: previewKind,
+            loading: false,
+            objectUrl: '',
+            textContent,
+          })
+          setStatus(`预览：${normalizedPath}`)
+          return
+        }
+
+        const payload = await targetClient.getFileContents(toClientDavPath(normalizedPath), { format: 'binary' })
+        const blobPayload = toBlobPayload(payload)
+        if (!blobPayload) {
+          throw new Error('无法解析文件内容')
+        }
+
+        const objectUrl = URL.createObjectURL(new Blob([blobPayload], { type: getMimeTypeForFile(normalizedPath, previewKind) }))
+        if (previewRequestRef.current !== requestId) {
+          URL.revokeObjectURL(objectUrl)
+          return
+        }
+
+        previewObjectUrlRef.current = objectUrl
+        setPreviewDialog({
+          error: '',
+          file,
+          kind: previewKind,
+          loading: false,
+          objectUrl,
+          textContent: '',
+        })
+        setStatus(`预览：${normalizedPath}`)
+      } catch (error) {
+        if (previewRequestRef.current !== requestId) {
+          return
+        }
+        setPreviewDialog({
+          error: parseErrorMessage(error),
+          file,
+          kind: previewKind,
+          loading: false,
+          objectUrl: '',
+          textContent: '',
+        })
+      }
+    },
+    [notifyError, revokePreviewObjectUrl],
+  )
+
+  const downloadPreviewFile = useCallback(async () => {
+    if (!previewDialog) {
+      return
+    }
+
+    try {
+      if (previewDialog.kind === 'text') {
+        const textBlob = new Blob([previewDialog.textContent], {
+          type: 'text/plain;charset=utf-8',
+        })
+        downloadBlob(textBlob, previewDialog.file.name)
+        setStatus(`已下载：${previewDialog.file.path}`)
+        return
+      }
+
+      if (previewDialog.objectUrl) {
+        downloadObjectUrl(previewDialog.objectUrl, previewDialog.file.name)
+        setStatus(`已下载：${previewDialog.file.path}`)
+        return
+      }
+
+      if (!client) {
+        notifyError('请先连接 WebDAV')
+        return
+      }
+
+      const payload = await client.getFileContents(toClientDavPath(previewDialog.file.path), { format: 'binary' })
+      const blobPayload = toBlobPayload(payload)
+      if (!blobPayload) {
+        throw new Error('无法解析文件内容')
+      }
+      downloadBlob(new Blob([blobPayload]), previewDialog.file.name)
+      setStatus(`已下载：${previewDialog.file.path}`)
+    } catch (error) {
+      notifyError('下载失败', error)
+    }
+  }, [client, notifyError, previewDialog])
+
   const reloadRemoteState = useCallback(
     async (targetClient: WebDAVClient, targetConfig: DavConfig, preferredPath?: string) => {
       const snapshot = await listRemote(targetClient, targetConfig)
       setFiles(snapshot.files)
       setDirectories(snapshot.directories)
 
-      if (snapshot.files.length === 0) {
+      if (previewDialog && !snapshot.files.some((item) => item.path === previewDialog.file.path)) {
+        closePreviewDialog()
+      }
+
+      const targetPath = pickMarkdownTargetPath(snapshot.files, preferredPath, activeFilePath)
+      if (!targetPath) {
         setActiveFilePath('')
-        setContentWithHistory('# 空目录\n\n当前目录没有 markdown 文件。', { resetHistory: true })
+        setContentWithHistory('# 空目录\n\n当前目录没有 Markdown 文件。\n\n你仍可点击文本、图片、视频、音频、PDF 文件进行预览。', {
+          resetHistory: true,
+        })
         setWysiwygSyncVersion((prev) => prev + 1)
         return
       }
 
-      const preferred = preferredPath ? normalizeDavPath(preferredPath) : ''
-      const current = normalizeDavPath(activeFilePath)
-      const targetPath =
-        (preferred && snapshot.files.some((item) => item.path === preferred) && preferred) ||
-        (current && snapshot.files.some((item) => item.path === current) && current) ||
-        snapshot.files[0].path
-
       await readFile(targetClient, targetPath)
     },
-    [activeFilePath, listRemote, readFile, setContentWithHistory],
+    [activeFilePath, closePreviewDialog, listRemote, previewDialog, readFile, setContentWithHistory],
   )
 
   const connectWebdav = useCallback(
     async (inputConfig: DavConfig, options?: { persist?: boolean }) => {
       const nextConfig = {
+        attachments: normalizeAttachmentSettings(inputConfig.attachments),
         rootPath: normalizeRootPath(inputConfig.rootPath),
         url: normalizeUrl(inputConfig.url),
         username: inputConfig.username.trim(),
@@ -898,7 +1421,7 @@ function App() {
       try {
         const hasCredentials = Boolean(nextConfig.username || nextConfig.password)
         const nextClient = createClient(
-          nextConfig.url,
+          ensureDavBaseUrl(nextConfig.url),
           hasCredentials
             ? {
                 password: nextConfig.password,
@@ -914,6 +1437,9 @@ function App() {
         setFiles(snapshot.files)
         setDirectories(snapshot.directories)
         setExpandedFolders((prev) => ({ ...prev, [nextConfig.rootPath]: true }))
+        revokeAllObjectUrls(imagePreviewUrlMapRef.current)
+        imagePreviewPendingRef.current.clear()
+        closePreviewDialog()
 
         if (options?.persist === false) {
           localStorage.removeItem(CONFIG_KEY)
@@ -921,11 +1447,14 @@ function App() {
           localStorage.setItem(CONFIG_KEY, JSON.stringify(nextConfig))
         }
 
-        if (snapshot.files.length > 0) {
-          await readFile(nextClient, snapshot.files[0].path)
+        const targetPath = pickMarkdownTargetPath(snapshot.files)
+        if (targetPath) {
+          await readFile(nextClient, targetPath)
         } else {
           setActiveFilePath('')
-          setContentWithHistory('# 空目录\n\n当前目录没有 markdown 文件。', { resetHistory: true })
+          setContentWithHistory('# 空目录\n\n当前目录没有 Markdown 文件。\n\n你仍可点击文本、图片、视频、音频、PDF 文件进行预览。', {
+            resetHistory: true,
+          })
           setWysiwygSyncVersion((prev) => prev + 1)
         }
 
@@ -936,13 +1465,14 @@ function App() {
         setFiles([])
         setDirectories([])
         setActiveFilePath('')
+        closePreviewDialog()
         notifyError('连接失败', error)
         return false
       } finally {
         setBusy(false)
       }
     },
-    [listRemote, notifyError, readFile, setContentWithHistory],
+    [closePreviewDialog, listRemote, notifyError, readFile, setContentWithHistory],
   )
 
   useEffect(() => {
@@ -951,6 +1481,16 @@ function App() {
     }
     void connectWebdav(initialStoredConfig, { persist: true })
   }, [connectWebdav, initialStoredConfig])
+
+  useEffect(
+    () => () => {
+      previewRequestRef.current += 1
+      revokePreviewObjectUrl()
+      revokeAllObjectUrls(imagePreviewUrlMapRef.current)
+      imagePreviewPendingRef.current.clear()
+    },
+    [revokePreviewObjectUrl],
+  )
 
   useEffect(() => {
     if (!contextMenu) {
@@ -984,17 +1524,30 @@ function App() {
         return
       }
 
+      const normalizedPath = normalizeDavPath(filePath)
+      const selected = fileMap.get(normalizedPath)
+      if (!selected) {
+        notifyError(`文件不存在：${normalizedPath}`)
+        return
+      }
+
+      if (selected.kind !== 'markdown') {
+        await openPreviewFile(client, selected)
+        return
+      }
+
       setBusy(true)
       try {
-        await readFile(client, filePath)
-        setStatus(`已载入：${filePath}`)
+        closePreviewDialog()
+        await readFile(client, normalizedPath)
+        setStatus(`已载入：${normalizedPath}`)
       } catch (error) {
         notifyError('读取失败', error)
       } finally {
         setBusy(false)
       }
     },
-    [client, notifyError, readFile],
+    [client, closePreviewDialog, fileMap, notifyError, openPreviewFile, readFile],
   )
 
   const onRefresh = useCallback(async () => {
@@ -1014,24 +1567,458 @@ function App() {
     }
   }, [client, config, notifyError, reloadRemoteState])
 
+  const openAttachmentSettingsDialog = useCallback(() => {
+    const sourceAttachments = normalizeAttachmentSettings(config?.attachments ?? draftConfig.attachments)
+    setDraftAttachmentSettings(sourceAttachments)
+    setAttachmentDialogOpen(true)
+  }, [config, draftConfig.attachments])
+
+  const onSaveAttachmentSettings = useCallback(() => {
+    const nextAttachments = normalizeAttachmentSettings(draftAttachmentSettings)
+    setDraftConfig((prev) => ({ ...prev, attachments: nextAttachments }))
+
+    if (config) {
+      const nextConfig = {
+        ...config,
+        attachments: nextAttachments,
+      }
+      setConfig(nextConfig)
+
+      if (localStorage.getItem(CONFIG_KEY)) {
+        localStorage.setItem(CONFIG_KEY, JSON.stringify(nextConfig))
+      }
+    }
+
+    setStatus('附件设置已更新')
+    setAttachmentDialogOpen(false)
+    toast.success('附件设置已保存')
+  }, [config, draftAttachmentSettings])
+
+  const onCleanupUnusedAttachments = useCallback(async () => {
+    if (!client || !config) {
+      notifyError('请先连接 WebDAV')
+      return
+    }
+
+    const targetClient = client as WebDAVClient & { deleteFile?: (path: string) => Promise<void> }
+    if (!targetClient.deleteFile) {
+      notifyError('当前 WebDAV 客户端不支持删除')
+      return
+    }
+
+    const attachmentSettings = normalizeAttachmentSettings(config.attachments)
+
+    setIsCleaningAttachments(true)
+    setBusy(true)
+    setStatus('扫描未引用附件中...')
+
+    try {
+      const snapshot = await listRemote(client, config)
+      const markdownFiles = snapshot.files.filter((item) => item.kind === 'markdown')
+      const referencedAttachmentPaths = new Set<string>()
+      let unreadableMarkdownCount = 0
+
+      for (const markdownFile of markdownFiles) {
+        try {
+          const markdownContent =
+            markdownFile.path === activeFilePath
+              ? contentRef.current
+              : ((await client.getFileContents(toClientDavPath(markdownFile.path), { format: 'text' })) as string)
+          const linkTargets = extractMarkdownLinkTargets(markdownContent)
+          for (const link of linkTargets) {
+            const resolvedPath = resolveAttachmentLinkToDavPath(link, markdownFile.path, config.url)
+            if (!resolvedPath) {
+              continue
+            }
+            if (!isManagedAttachmentFilePath(resolvedPath, attachmentSettings, config.rootPath)) {
+              continue
+            }
+            referencedAttachmentPaths.add(normalizeDavPath(resolvedPath))
+          }
+        } catch {
+          unreadableMarkdownCount += 1
+        }
+      }
+
+      const cleanupCandidates = [...new Set(
+        snapshot.files
+          .filter((item) => item.kind !== 'markdown')
+          .filter((item) => isManagedAttachmentFilePath(item.path, attachmentSettings, config.rootPath))
+          .map((item) => normalizeDavPath(item.path)),
+      )]
+      const stalePaths = cleanupCandidates.filter((path) => !referencedAttachmentPaths.has(path))
+
+      if (stalePaths.length === 0) {
+        const message = unreadableMarkdownCount > 0 ? '未发现可清理附件（部分 Markdown 读取失败）' : '未发现未引用附件'
+        setStatus(message)
+        toast.success(message)
+        return
+      }
+
+      const confirmed = window.confirm(`检测到 ${stalePaths.length} 个未引用附件，确认删除吗？`)
+      if (!confirmed) {
+        setStatus('已取消附件清理')
+        return
+      }
+
+      let deletedCount = 0
+      let failedCount = 0
+
+      for (const path of stalePaths) {
+        try {
+          await targetClient.deleteFile(toClientDavPath(path))
+          deletedCount += 1
+        } catch {
+          failedCount += 1
+        }
+      }
+
+      await reloadRemoteState(client, config, activeFilePath)
+
+      if (failedCount === 0) {
+        const message = `已清理 ${deletedCount} 个未引用附件`
+        setStatus(message)
+        toast.success(message)
+      } else {
+        const message = `已清理 ${deletedCount} 个附件，${failedCount} 个删除失败`
+        setStatus(message)
+        toast.warning(message)
+      }
+
+      if (unreadableMarkdownCount > 0) {
+        toast.warning(`有 ${unreadableMarkdownCount} 个 Markdown 文件读取失败，结果可能不完整`)
+      }
+    } catch (error) {
+      notifyError('清理未引用附件失败', error)
+    } finally {
+      setBusy(false)
+      setIsCleaningAttachments(false)
+    }
+  }, [activeFilePath, client, config, listRemote, notifyError, reloadRemoteState])
+
+  const ensureDavDirectory = useCallback(async (targetClient: WebDAVClient, directoryPath: string) => {
+    const normalizedPath = normalizeDavPath(directoryPath)
+    if (normalizedPath === '/') {
+      return
+    }
+
+    const clientWithCreateDirectory = targetClient as WebDAVClient & {
+      createDirectory?: (path: string, options?: { recursive?: boolean }) => Promise<void>
+    }
+    if (!clientWithCreateDirectory.createDirectory) {
+      throw new Error('当前 WebDAV 客户端不支持创建目录')
+    }
+
+    const clientPath = toClientDavPath(normalizedPath)
+    try {
+      await clientWithCreateDirectory.createDirectory(clientPath, { recursive: true })
+      return
+    } catch (error) {
+      if (!isMethodUnsupported(error)) {
+        const exists = await targetClient.exists(clientPath)
+        if (exists) {
+          return
+        }
+      }
+    }
+
+    let cursor = ''
+    for (const segment of normalizedPath.split('/').filter(Boolean)) {
+      cursor = `${cursor}/${segment}`.replace(/\/+/g, '/')
+      const next = normalizeDavPath(cursor)
+      const nextClientPath = toClientDavPath(next)
+      const exists = await targetClient.exists(nextClientPath)
+      if (exists) {
+        continue
+      }
+      try {
+        await clientWithCreateDirectory.createDirectory(nextClientPath)
+      } catch (error) {
+        const existsAfterError = await targetClient.exists(nextClientPath)
+        if (!existsAfterError) {
+          throw error
+        }
+      }
+    }
+  }, [])
+
+  const uploadAttachmentFile = useCallback(
+    async (file: File): Promise<UploadAttachmentResult> => {
+      if (!client || !config || !activeFilePath) {
+        throw new Error('请先连接 WebDAV 并选择文件')
+      }
+
+      const settings = normalizeAttachmentSettings(config.attachments)
+      const maxBytes = settings.maxSizeMB * 1024 * 1024
+      if (file.size > maxBytes) {
+        throw new Error(`文件过大，当前上限 ${settings.maxSizeMB}MB`)
+      }
+
+      setIsUploadingAttachment(true)
+      setStatus(`上传附件中：${file.name}`)
+
+      try {
+        const uploadTarget = buildAttachmentTarget({
+          activeFilePath,
+          baseUrl: config.url,
+          originalFileName: file.name,
+          rootPath: config.rootPath,
+          settings,
+        })
+
+        await ensureDavDirectory(client, uploadTarget.directoryPath)
+
+        const payload = await file.arrayBuffer()
+        try {
+          const created = await client.putFileContents(toClientDavPath(uploadTarget.remotePath), payload, { overwrite: false })
+          if (created === false) {
+            throw new Error(`附件已存在：${uploadTarget.remotePath}`)
+          }
+        } catch (error) {
+          if (!shouldFallbackCreateFileForAList(error)) {
+            throw error
+          }
+
+          const exists = await client.exists(toClientDavPath(uploadTarget.remotePath))
+          if (exists) {
+            throw new Error(`附件已存在：${uploadTarget.remotePath}`)
+          }
+
+          await client.putFileContents(toClientDavPath(uploadTarget.remotePath), payload, { overwrite: true })
+        }
+
+        setStatus(`附件已上传：${uploadTarget.remotePath}`)
+        return {
+          davPath: uploadTarget.remotePath,
+          link: uploadTarget.markdownLink,
+        }
+      } catch (error) {
+        notifyError('附件上传失败', error)
+        throw error
+      } finally {
+        setIsUploadingAttachment(false)
+      }
+    },
+    [activeFilePath, client, config, ensureDavDirectory, notifyError],
+  )
+
+  const resolveImageSrc = useCallback(
+    async (url: string) => {
+      if (!url || isExternalResourceUrl(url)) {
+        return url
+      }
+
+      if (!client || !activeFilePath) {
+        return url
+      }
+
+      const davPath = resolveMarkdownLinkToDavPath(url, activeFilePath)
+      if (!davPath) {
+        return url
+      }
+
+      const cached = imagePreviewUrlMapRef.current.get(davPath)
+      if (cached) {
+        return cached
+      }
+
+      const pending = imagePreviewPendingRef.current.get(davPath)
+      if (pending) {
+        return pending
+      }
+
+      const task = (async () => {
+        try {
+          const payload = await client.getFileContents(toClientDavPath(davPath), { format: 'binary' })
+          const blobPayload = toBlobPayload(payload)
+          if (!blobPayload) {
+            return url
+          }
+
+          const objectUrl = URL.createObjectURL(new Blob([blobPayload]))
+          imagePreviewUrlMapRef.current.set(davPath, objectUrl)
+          return objectUrl
+        } catch {
+          return url
+        } finally {
+          imagePreviewPendingRef.current.delete(davPath)
+        }
+      })()
+
+      imagePreviewPendingRef.current.set(davPath, task)
+      return task
+    },
+    [activeFilePath, client],
+  )
+
+  const insertSnippetToSourceEditor = useCallback(
+    (snippet: string) => {
+      const textarea = sourceEditorRef.current
+      if (!textarea) {
+        setContentWithHistory(`${contentRef.current}\n${snippet}`.trim())
+        return
+      }
+
+      const { selectionEnd, selectionStart, value } = textarea
+      const nextValue = `${value.slice(0, selectionStart)}${snippet}${value.slice(selectionEnd)}`
+      setContentWithHistory(nextValue)
+
+      requestAnimationFrame(() => {
+        textarea.focus()
+        const cursor = selectionStart + snippet.length
+        textarea.setSelectionRange(cursor, cursor)
+      })
+    },
+    [setContentWithHistory],
+  )
+
+  const insertMarkdownSnippet = useCallback(
+    (snippet: string) => {
+      if (editorMode === 'source') {
+        insertSnippetToSourceEditor(snippet)
+        return
+      }
+
+      if (wysiwygApiRef.current?.insertMarkdown(snippet)) {
+        return
+      }
+
+      setContentWithHistory(`${contentRef.current}\n${snippet}`.trim())
+    },
+    [editorMode, insertSnippetToSourceEditor, setContentWithHistory],
+  )
+
+  const onAttachmentInputChange = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0]
+      event.target.value = ''
+
+      if (!file) {
+        return
+      }
+
+      try {
+        const result = await uploadAttachmentFile(file)
+        const snippet = buildAttachmentMarkdown(file, result.link)
+        insertMarkdownSnippet(snippet)
+        toast.success(`附件已上传：${file.name}`)
+      } catch {
+        // Errors are already handled in uploadAttachmentFile.
+      }
+    },
+    [insertMarkdownSnippet, uploadAttachmentFile],
+  )
+
+  const onWysiwygImageUpload = useCallback(
+    async (file: File) => {
+      const result = await uploadAttachmentFile(file)
+      return result.link
+    },
+    [uploadAttachmentFile],
+  )
+
+  const uploadPastedImagesToDav = useCallback(
+    (clipboardData: DataTransfer | null) => {
+      if (!canUseEditorActions || isUploadingAttachment) {
+        return false
+      }
+
+      const files = getClipboardImageFiles(clipboardData)
+      if (files.length === 0) {
+        return false
+      }
+
+      void (async () => {
+        const snippets: string[] = []
+        const uploadedNames: string[] = []
+
+        for (const file of files) {
+          try {
+            const result = await uploadAttachmentFile(file)
+            snippets.push(buildAttachmentMarkdown(file, result.link))
+            uploadedNames.push(file.name)
+          } catch {
+            break
+          }
+        }
+
+        if (!snippets.length) {
+          return
+        }
+
+        insertMarkdownSnippet(snippets.join('\n'))
+        if (uploadedNames.length === 1) {
+          toast.success(`截图已上传：${uploadedNames[0]}`)
+          return
+        }
+        toast.success(`截图已上传：${uploadedNames.length} 张`)
+      })()
+
+      return true
+    },
+    [canUseEditorActions, insertMarkdownSnippet, isUploadingAttachment, uploadAttachmentFile],
+  )
+
+  const onSourcePasteCapture = useCallback(
+    (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+      if (!uploadPastedImagesToDav(event.clipboardData)) {
+        return
+      }
+      event.preventDefault()
+      event.stopPropagation()
+    },
+    [uploadPastedImagesToDav],
+  )
+
+  const onWysiwygPasteCapture = useCallback(
+    (event: ReactClipboardEvent<HTMLDivElement>) => {
+      if (!uploadPastedImagesToDav(event.clipboardData)) {
+        return
+      }
+      event.preventDefault()
+      event.stopPropagation()
+    },
+    [uploadPastedImagesToDav],
+  )
+
+  useEffect(() => {
+    if (!saveIconFlash) {
+      return
+    }
+    const timer = window.setTimeout(() => {
+      setSaveIconFlash(false)
+    }, 420)
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [saveIconFlash])
+
   const onSave = useCallback(async () => {
     if (!client || !activeFilePath) {
       notifyError('未选择可保存的文件')
       return
     }
 
-    setBusy(true)
+    if (isSaving) {
+      return
+    }
+
+    setIsSaving(true)
+    setSaveIconFlash(false)
     try {
-      await client.putFileContents(activeFilePath, contentRef.current, { overwrite: true })
+      await client.putFileContents(toClientDavPath(activeFilePath), contentRef.current, { overwrite: true })
       historyRef.current = [contentRef.current]
       historyIndexRef.current = 0
       setStatus(`已保存：${activeFilePath}`)
     } catch (error) {
       notifyError('保存失败', error)
     } finally {
-      setBusy(false)
+      setIsSaving(false)
+      requestAnimationFrame(() => {
+        setSaveIconFlash(true)
+      })
     }
-  }, [activeFilePath, client, notifyError])
+  }, [activeFilePath, client, isSaving, notifyError])
 
   const onLogout = useCallback(() => {
     localStorage.removeItem(CONFIG_KEY)
@@ -1041,15 +2028,23 @@ function App() {
     setDirectories([])
     setExpandedFolders({})
     setActiveFilePath('')
-    setDraftConfig(EMPTY_CONFIG)
+    setDraftConfig({ ...EMPTY_CONFIG, attachments: { ...DEFAULT_ATTACHMENT_SETTINGS } })
     setRememberCredentials(false)
     setShowPassword(false)
+    setIsUploadingAttachment(false)
+    closePreviewDialog()
+    revokeAllObjectUrls(imagePreviewUrlMapRef.current)
+    imagePreviewPendingRef.current.clear()
     setContentWithHistory(DEFAULT_MARKDOWN, { resetHistory: true })
     setWysiwygSyncVersion((prev) => prev + 1)
     setStatus('已登出，并清除本地连接记录')
-  }, [setContentWithHistory])
+  }, [closePreviewDialog, setContentWithHistory])
 
   const onUndo = useCallback(() => {
+    if (editorMode === 'wysiwyg' && wysiwygApiRef.current?.applyToolbarAction('undo')) {
+      return
+    }
+
     if (historyIndexRef.current <= 0) {
       return
     }
@@ -1061,6 +2056,10 @@ function App() {
   }, [editorMode, setContentWithHistory])
 
   const onRedo = useCallback(() => {
+    if (editorMode === 'wysiwyg' && wysiwygApiRef.current?.applyToolbarAction('redo')) {
+      return
+    }
+
     if (historyIndexRef.current >= historyRef.current.length - 1) {
       return
     }
@@ -1094,6 +2093,15 @@ function App() {
         }
         event.preventDefault()
         onUndo()
+        return
+      }
+
+      if (key === 'y' || (key === 'z' && event.shiftKey)) {
+        if (!canUseEditorActions) {
+          return
+        }
+        event.preventDefault()
+        onRedo()
       }
     }
 
@@ -1101,7 +2109,7 @@ function App() {
     return () => {
       window.removeEventListener('keydown', onKeydown)
     }
-  }, [canUseEditorActions, onSave, onUndo])
+  }, [canUseEditorActions, onRedo, onSave, onUndo])
 
   const insertAroundSelection = useCallback(
     (prefix: string, suffix: string, placeholder: string) => {
@@ -1169,125 +2177,74 @@ function App() {
     [setContentWithHistory],
   )
 
-  const syncMarkdownFromWysiwyg = useCallback(() => {
-    const host = wysiwygEditorRef.current
-    if (!host) {
-      return
-    }
-    setContentWithHistory(htmlToMarkdown(host.innerHTML))
-  }, [setContentWithHistory])
-
-  const runWysiwygCommand = useCallback(
-    (command: string, value?: string) => {
-      const host = wysiwygEditorRef.current
-      if (!host) {
-        return
-      }
-      host.focus()
-      document.execCommand(command, false, value)
-      syncMarkdownFromWysiwyg()
-    },
-    [syncMarkdownFromWysiwyg],
-  )
-
   const onToolbarAction = useCallback(
     (action: ToolbarAction) => {
       if (!canUseEditorActions) {
         return
       }
 
-      if (action === 'undo') {
-        onUndo()
-        return
-      }
-
-      if (action === 'redo') {
-        onRedo()
-        return
-      }
-
-      if (editorMode === 'source') {
-        switch (action) {
-          case 'h1':
-            insertLinePrefix('# ')
-            return
-          case 'h2':
-            insertLinePrefix('## ')
-            return
-          case 'bold':
-            insertAroundSelection('**', '**', '粗体')
-            return
-          case 'italic':
-            insertAroundSelection('*', '*', '斜体')
-            return
-          case 'bullet':
-            insertLinePrefix('- ')
-            return
-          case 'ordered':
-            insertLinePrefix('1. ')
-            return
-          case 'quote':
-            insertLinePrefix('> ')
-            return
-          case 'code':
-            insertBlock('```\n\n```')
-            return
-          case 'table':
-            insertBlock('| 列 1 | 列 2 |\n| --- | --- |\n| 内容 | 内容 |')
-            return
-          case 'task':
-            insertLinePrefix('- [ ] ')
-            return
-          case 'math':
-            insertBlock('$$\n\n$$')
-            return
-          default:
-            return
+      if (editorMode === 'wysiwyg') {
+        if (wysiwygApiRef.current?.applyToolbarAction(action)) {
+          return
         }
+
+        if (action === 'undo') {
+          onUndo()
+          return
+        }
+
+        if (action === 'redo') {
+          onRedo()
+          return
+        }
+        return
       }
 
       switch (action) {
+        case 'undo':
+          onUndo()
+          return
+        case 'redo':
+          onRedo()
+          return
         case 'h1':
-          runWysiwygCommand('formatBlock', 'H1')
-          break
+          insertLinePrefix('# ')
+          return
         case 'h2':
-          runWysiwygCommand('formatBlock', 'H2')
-          break
+          insertLinePrefix('## ')
+          return
         case 'bold':
-          runWysiwygCommand('bold')
-          break
+          insertAroundSelection('**', '**', '粗体')
+          return
         case 'italic':
-          runWysiwygCommand('italic')
-          break
+          insertAroundSelection('*', '*', '斜体')
+          return
         case 'bullet':
-          runWysiwygCommand('insertUnorderedList')
-          break
+          insertLinePrefix('- ')
+          return
         case 'ordered':
-          runWysiwygCommand('insertOrderedList')
-          break
+          insertLinePrefix('1. ')
+          return
         case 'quote':
-          runWysiwygCommand('formatBlock', 'BLOCKQUOTE')
-          break
+          insertLinePrefix('> ')
+          return
         case 'code':
-          runWysiwygCommand('formatBlock', 'PRE')
-          break
+          insertBlock('```\n\n```')
+          return
         case 'table':
-          runWysiwygCommand(
-            'insertHTML',
-            '<table><thead><tr><th>列 1</th><th>列 2</th></tr></thead><tbody><tr><td>内容</td><td>内容</td></tr></tbody></table><p><br></p>',
-          )
-          break
+          insertBlock('| 列 1 | 列 2 |\n| --- | --- |\n| 内容 | 内容 |')
+          return
         case 'task':
-          runWysiwygCommand('insertHTML', '<ul><li>[ ] 新任务</li></ul><p><br></p>')
-          break
+          insertLinePrefix('- [ ] ')
+          return
         case 'math':
-          runWysiwygCommand('insertText', '$$\n\n$$')
-          break
+          insertBlock('$$\n\n$$')
+          return
         default:
-          break
+          return
       }
     },
-    [canUseEditorActions, editorMode, insertAroundSelection, insertBlock, insertLinePrefix, onRedo, onUndo, runWysiwygCommand],
+    [canUseEditorActions, editorMode, insertAroundSelection, insertBlock, insertLinePrefix, onRedo, onUndo],
   )
 
   const openContextMenu = useCallback(
@@ -1345,7 +2302,7 @@ function App() {
       setBusy(true)
       try {
         try {
-          const created = await client.putFileContents(nextPath, '# 新建文档\n', { overwrite: false })
+          const created = await client.putFileContents(toClientDavPath(nextPath), '# 新建文档\n', { overwrite: false })
           if (created === false) {
             throw new Error(`文件已存在：${nextPath}`)
           }
@@ -1359,12 +2316,12 @@ function App() {
             toast.warning('检测到 AList 写入兼容模式，已自动降级文件创建策略')
           }
 
-          const exists = await client.exists(nextPath)
+          const exists = await client.exists(toClientDavPath(nextPath))
           if (exists) {
             throw new Error(`文件已存在：${nextPath}`)
           }
 
-          await client.putFileContents(nextPath, '# 新建文档\n', { overwrite: true })
+          await client.putFileContents(toClientDavPath(nextPath), '# 新建文档\n', { overwrite: true })
         }
 
         await reloadRemoteState(client, config, nextPath)
@@ -1404,7 +2361,7 @@ function App() {
 
       setBusy(true)
       try {
-        await targetClient.createDirectory(nextPath)
+        await targetClient.createDirectory(toClientDavPath(nextPath))
         await reloadRemoteState(client, config)
         setExpandedFolders((prev) => ({ ...prev, [nextPath]: true }))
         setStatus(`已创建目录：${nextPath}`)
@@ -1434,7 +2391,8 @@ function App() {
         return
       }
 
-      if (kind === 'file' && !/\.(md|markdown)$/i.test(nextName)) {
+      const sourceFile = kind === 'file' ? fileMap.get(normalizeDavPath(targetPath)) : null
+      if (kind === 'file' && sourceFile?.kind === 'markdown' && !/\.(md|markdown)$/i.test(nextName)) {
         nextName = `${nextName}.md`
       }
 
@@ -1453,7 +2411,7 @@ function App() {
 
       setBusy(true)
       try {
-        await targetClient.moveFile(targetPath, destinationPath)
+        await targetClient.moveFile(toClientDavPath(targetPath), toClientDavPath(destinationPath))
         const preferredPath = activeFilePath === targetPath ? destinationPath : activeFilePath
         await reloadRemoteState(client, config, preferredPath)
         if (activeFilePath === targetPath) {
@@ -1466,7 +2424,7 @@ function App() {
         setBusy(false)
       }
     },
-    [activeFilePath, client, config, notifyError, reloadRemoteState],
+    [activeFilePath, client, config, fileMap, notifyError, reloadRemoteState],
   )
 
   const deleteNode = useCallback(
@@ -1488,7 +2446,7 @@ function App() {
 
       setBusy(true)
       try {
-        await targetClient.deleteFile(targetPath)
+        await targetClient.deleteFile(toClientDavPath(targetPath))
         const activeRemoved =
           activeFilePath === targetPath || activeFilePath.startsWith(`${normalizeDavPath(targetPath)}/`)
         const preferredPath = activeRemoved ? undefined : activeFilePath
@@ -1542,12 +2500,24 @@ function App() {
       }
 
       for (const file of node.files) {
-        const active = file.path === activeFilePath
+        const active = file.path === selectedFilePath
+        const icon =
+          file.kind === 'image' ? (
+            <ImageIcon className="h-3.5 w-3.5 shrink-0" />
+          ) : file.kind === 'video' ? (
+            <VideoIcon className="h-3.5 w-3.5 shrink-0" />
+          ) : file.kind === 'audio' || file.kind === 'pdf' || file.kind === 'other' ? (
+            <FileIcon className="h-3.5 w-3.5 shrink-0" />
+          ) : (
+            <FileText className="h-3.5 w-3.5 shrink-0" />
+          )
+
         items.push(
           <button
             key={file.path}
             type="button"
             onClick={() => void onSelectFile(file.path)}
+            onDoubleClick={() => void onSelectFile(file.path)}
             onContextMenu={(event) => openContextMenu(event, file.path, 'file')}
             className={`flex h-8 w-full items-center gap-2 rounded-[var(--mf-radius-md)] px-2 py-1 text-left text-[13px] transition-colors ${
               active
@@ -1556,7 +2526,7 @@ function App() {
             }`}
             style={{ paddingLeft: `${28 + depth * 12}px` }}
           >
-            <FileText className="h-3.5 w-3.5 shrink-0" />
+            {icon}
             <span className="truncate">{file.name}</span>
           </button>,
         )
@@ -1564,11 +2534,22 @@ function App() {
 
       return items
     },
-    [activeFilePath, isFolderOpen, onSelectFile, openContextMenu],
+    [isFolderOpen, onSelectFile, openContextMenu, selectedFilePath],
   )
 
   const menuPath = contextMenu?.path ?? rootPath
+  const contextFile = contextMenu?.kind === 'file' ? fileMap.get(menuPath) ?? null : null
+  const openFileMenuLabel = contextFile
+    ? contextFile.kind === 'markdown'
+      ? '打开文件'
+      : toPreviewFileKind(contextFile.kind)
+        ? '预览文件'
+        : '尝试打开'
+    : '打开文件'
   const createTargetPath = contextMenu?.kind === 'file' ? parentDavPath(menuPath) : menuPath
+  const previewTypeLabel = previewDialog ? getPreviewTypeLabel(previewDialog.kind) : ''
+  const canDownloadPreview = Boolean(previewDialog) && !previewDialog?.loading && !previewDialog?.error
+  const toolbarDisabled = !canUseEditorActions
 
   return (
     <div className="h-full w-full bg-[var(--mf-bg)] text-[var(--mf-text)]">
@@ -1616,6 +2597,16 @@ function App() {
                   >
                     <RefreshCw className="h-4 w-4" />
                   </Button>
+                  <Button
+                    variant="toolbar"
+                    size="icon"
+                    onClick={openAttachmentSettingsDialog}
+                    disabled={!isConnected}
+                    title="附件设置"
+                    aria-label="附件设置"
+                  >
+                    <Paperclip className="h-4 w-4" />
+                  </Button>
                   <Button variant="toolbar" size="icon" onClick={onLogout} disabled={!isConnected} title="登出" aria-label="登出">
                     <LogOut className="h-4 w-4" />
                   </Button>
@@ -1626,25 +2617,35 @@ function App() {
                   style={sidebarTreeContainerStyle}
                   onContextMenu={(event) => openContextMenu(event, rootPath, 'root')}
                 >
-                  <div className="flex items-start justify-between gap-2 rounded-[var(--mf-radius-md)] px-2 py-1.5">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5 text-xs text-[var(--mf-muted)]">
+                  <div className="rounded-[var(--mf-radius-md)] px-2 py-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex min-w-0 items-center gap-1.5 text-xs text-[var(--mf-muted)]">
                         <Folder className="h-3.5 w-3.5 text-[var(--mf-muted)]" />
                         <span className="truncate">根目录：{rootPath}</span>
                       </div>
-                      <p className="mt-1 text-[11px] text-[var(--mf-muted)]">右键可新建、重命名、删除、刷新</p>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <Button
+                          variant="toolbar"
+                          size="iconCompact"
+                          onClick={openAttachmentSettingsDialog}
+                          disabled={!isConnected}
+                          title="附件设置"
+                          aria-label="附件设置"
+                        >
+                          <Paperclip className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          variant="toolbar"
+                          size="iconCompact"
+                          onClick={() => void onRefresh()}
+                          disabled={busy || !isConnected}
+                          title="刷新目录"
+                          aria-label="刷新目录"
+                        >
+                          <RefreshCw className={`h-3.5 w-3.5 ${busy ? 'animate-spin' : ''}`} />
+                        </Button>
+                      </div>
                     </div>
-                    <Button
-                      variant="toolbar"
-                      size="iconCompact"
-                      className="shrink-0"
-                      onClick={() => void onRefresh()}
-                      disabled={busy || !isConnected}
-                      title="刷新目录"
-                      aria-label="刷新目录"
-                    >
-                      <RefreshCw className={`h-3.5 w-3.5 ${busy ? 'animate-spin' : ''}`} />
-                    </Button>
                   </div>
                   <div className="mt-1 space-y-1">
                     {renderTree(folderTree, 0)}
@@ -1689,7 +2690,7 @@ function App() {
                 variant="toolbar"
                 size="icon"
                 title="标题 1"
-                disabled={!canUseEditorActions}
+                disabled={toolbarDisabled}
                 onClick={() => onToolbarAction('h1')}
               >
                 <Heading1 className="h-4 w-4" />
@@ -1698,7 +2699,7 @@ function App() {
                 variant="toolbar"
                 size="icon"
                 title="标题 2"
-                disabled={!canUseEditorActions}
+                disabled={toolbarDisabled}
                 onClick={() => onToolbarAction('h2')}
               >
                 <Heading2 className="h-4 w-4" />
@@ -1707,7 +2708,7 @@ function App() {
                 variant="toolbar"
                 size="icon"
                 title="粗体"
-                disabled={!canUseEditorActions}
+                disabled={toolbarDisabled}
                 onClick={() => onToolbarAction('bold')}
               >
                 <Bold className="h-4 w-4" />
@@ -1716,7 +2717,7 @@ function App() {
                 variant="toolbar"
                 size="icon"
                 title="斜体"
-                disabled={!canUseEditorActions}
+                disabled={toolbarDisabled}
                 onClick={() => onToolbarAction('italic')}
               >
                 <Italic className="h-4 w-4" />
@@ -1725,7 +2726,7 @@ function App() {
                 variant="toolbar"
                 size="icon"
                 title="无序列表"
-                disabled={!canUseEditorActions}
+                disabled={toolbarDisabled}
                 onClick={() => onToolbarAction('bullet')}
               >
                 <List className="h-4 w-4" />
@@ -1734,7 +2735,7 @@ function App() {
                 variant="toolbar"
                 size="icon"
                 title="有序列表"
-                disabled={!canUseEditorActions}
+                disabled={toolbarDisabled}
                 onClick={() => onToolbarAction('ordered')}
               >
                 <ListOrdered className="h-4 w-4" />
@@ -1743,7 +2744,7 @@ function App() {
                 variant="toolbar"
                 size="icon"
                 title="引用"
-                disabled={!canUseEditorActions}
+                disabled={toolbarDisabled}
                 onClick={() => onToolbarAction('quote')}
               >
                 <Quote className="h-4 w-4" />
@@ -1752,7 +2753,7 @@ function App() {
                 variant="toolbar"
                 size="icon"
                 title="代码块"
-                disabled={!canUseEditorActions}
+                disabled={toolbarDisabled}
                 onClick={() => onToolbarAction('code')}
               >
                 <Code2 className="h-4 w-4" />
@@ -1761,7 +2762,7 @@ function App() {
                 variant="toolbar"
                 size="icon"
                 title="表格"
-                disabled={!canUseEditorActions}
+                disabled={toolbarDisabled}
                 onClick={() => onToolbarAction('table')}
               >
                 <Table2 className="h-4 w-4" />
@@ -1770,7 +2771,7 @@ function App() {
                 variant="toolbar"
                 size="icon"
                 title="任务列表"
-                disabled={!canUseEditorActions}
+                disabled={toolbarDisabled}
                 onClick={() => onToolbarAction('task')}
               >
                 <ListChecks className="h-4 w-4" />
@@ -1779,7 +2780,7 @@ function App() {
                 variant="toolbar"
                 size="icon"
                 title="数学公式"
-                disabled={!canUseEditorActions}
+                disabled={toolbarDisabled}
                 onClick={() => onToolbarAction('math')}
               >
                 <Calculator className="h-4 w-4" />
@@ -1808,13 +2809,35 @@ function App() {
               <Button
                 variant="toolbar"
                 size="icon"
-                className="text-[var(--mf-accent)] hover:bg-[var(--mf-accent-pale)] hover:text-[var(--mf-accent-strong)] active:bg-[var(--mf-accent-pale-hover)] active:text-[var(--mf-ring)]"
-                title="保存"
+                title={isUploadingAttachment ? '附件上传中...' : '上传附件'}
+                aria-label="上传附件"
+                onClick={() => attachmentInputRef.current?.click()}
+                disabled={!canUseEditorActions || isUploadingAttachment}
+              >
+                <Paperclip className={`h-4 w-4 ${isUploadingAttachment ? 'animate-pulse' : ''}`} />
+              </Button>
+              <input
+                ref={attachmentInputRef}
+                type="file"
+                className="hidden"
+                onChange={(event) => {
+                  void onAttachmentInputChange(event)
+                }}
+              />
+              <Button
+                variant="toolbar"
+                size="icon"
+                className={`relative overflow-hidden text-[var(--mf-accent)] hover:bg-[var(--mf-accent-pale)] hover:text-[var(--mf-accent-strong)] active:bg-[var(--mf-accent-pale-hover)] active:text-[var(--mf-ring)] ${
+                  isSaving ? 'bg-[var(--mf-accent-pale)] text-[var(--mf-accent-strong)]' : ''
+                }`}
+                title={isSaving ? '保存中...' : '保存'}
                 aria-label="保存"
                 onClick={() => void onSave()}
-                disabled={!activeFilePath || busy}
+                aria-busy={isSaving}
+                disabled={!activeFilePath || busy || isSaving}
               >
-                <Save className="h-4 w-4" />
+                <Save className={`h-4 w-4 ${saveIconFlash ? 'mf-save-icon-flash' : ''}`} />
+                {isSaving ? <span className="absolute bottom-0 left-1 right-1 h-[2px] rounded-full bg-[#3B82F6]" /> : null}
               </Button>
               <Dialog
                 open={dialogOpen}
@@ -1823,7 +2846,10 @@ function App() {
                   if (nextOpen) {
                     const remembered = loadStoredConfig()
                     const source = config ?? remembered ?? EMPTY_CONFIG
-                    setDraftConfig(source)
+                    setDraftConfig({
+                      ...source,
+                      attachments: normalizeAttachmentSettings(source.attachments),
+                    })
                     setRememberCredentials(Boolean(config ?? remembered))
                     setShowPassword(false)
                   }
@@ -1835,6 +2861,8 @@ function App() {
                   </Button>
                 </DialogTrigger>
                 <DialogContent className="h-auto w-[calc(100vw-24px)] max-w-[900px] overflow-hidden rounded-[20px] border-[#E5E7EB] bg-[#FFFFFF] p-0 shadow-none md:h-[560px] [&>button:last-child]:hidden">
+                  <DialogTitle className="sr-only">WebDAV 连接设置</DialogTitle>
+                  <DialogDescription className="sr-only">填写 URL、用户名和密码以连接远程 WebDAV 目录。</DialogDescription>
                   <button
                     type="button"
                     aria-label="关闭配置窗口"
@@ -1940,6 +2968,7 @@ function App() {
                           onClick={() => {
                             const nextConfig = {
                               ...draftConfig,
+                              attachments: normalizeAttachmentSettings(draftConfig.attachments),
                               rootPath: normalizeRootPath(draftConfig.rootPath),
                               url: normalizeUrl(draftConfig.url),
                             }
@@ -1971,39 +3000,48 @@ function App() {
           </header>
 
           <section className="flex-1 overflow-hidden bg-[var(--mf-surface)] p-6">
-            <div className="h-full border border-[var(--mf-border-soft)] bg-[var(--mf-surface)]">
-              {!isConnected ? (
-                <div className="flex h-full items-center justify-center px-6 text-sm text-[var(--mf-muted)]">
-                  连接成功后才能编辑文档
-                </div>
-              ) : !activeFilePath ? (
-                <div className="flex h-full items-center justify-center px-6 text-sm text-[var(--mf-muted)]">
-                  请先在左侧文件树选择一个 Markdown 文件
-                </div>
-              ) : editorMode === 'source' ? (
-                <textarea
-                  ref={sourceEditorRef}
-                  className={`h-full w-full resize-none border-none p-6 font-mono text-sm leading-7 outline-none ${
-                    canUseEditorActions
-                      ? 'bg-transparent text-[var(--mf-text)]'
-                      : 'bg-[var(--mf-surface-muted)] text-[var(--mf-muted)]'
-                  }`}
-                  value={content}
-                  readOnly={!canUseEditorActions}
-                  onChange={(event) => setContentWithHistory(event.target.value)}
-                  placeholder="开始书写 Markdown..."
-                />
-              ) : (
-                <WysiwygMarkdownEditor
-                  editable={canUseEditorActions}
-                  markdown={content}
-                  syncVersion={wysiwygSyncVersion}
-                  onChange={(nextValue) => setContentWithHistory(nextValue)}
-                  onHostChange={(node) => {
-                    wysiwygEditorRef.current = node
-                  }}
-                />
-              )}
+            <div
+              className="h-full rounded-[10px] border border-[#E5E7EB] bg-[#FFFFFF] p-3"
+              style={sidebarTreeContainerStyle}
+            >
+              <div className="h-full overflow-hidden rounded-[8px] bg-[var(--mf-surface)]">
+                {!isConnected ? (
+                  <div className="flex h-full items-center justify-center px-6 text-sm text-[var(--mf-muted)]">
+                    连接成功后才能编辑文档
+                  </div>
+                ) : !activeFilePath ? (
+                  <div className="flex h-full items-center justify-center px-6 text-sm text-[var(--mf-muted)]">
+                    请选择一个 Markdown 文件进行编辑，或点击文本/图片/视频/音频/PDF 文件进行预览
+                  </div>
+                ) : editorMode === 'source' ? (
+                  <textarea
+                    ref={sourceEditorRef}
+                    className={`h-full w-full resize-none border-none p-6 font-mono text-sm leading-7 outline-none ${
+                      canUseEditorActions
+                        ? 'bg-transparent text-[var(--mf-text)]'
+                        : 'bg-[var(--mf-surface-muted)] text-[var(--mf-muted)]'
+                    }`}
+                    value={content}
+                    readOnly={!canUseEditorActions}
+                    onChange={(event) => setContentWithHistory(event.target.value)}
+                    onPasteCapture={onSourcePasteCapture}
+                    placeholder="开始书写 Markdown..."
+                  />
+                ) : (
+                  <WysiwygMarkdownEditor
+                    editable={canUseEditorActions}
+                    markdown={content}
+                    onApiChange={(api) => {
+                      wysiwygApiRef.current = api
+                    }}
+                    syncVersion={wysiwygSyncVersion}
+                    onChange={(nextValue) => setContentWithHistory(nextValue)}
+                    onImageUpload={onWysiwygImageUpload}
+                    onPasteCapture={onWysiwygPasteCapture}
+                    resolveImageSrc={resolveImageSrc}
+                  />
+                )}
+              </div>
             </div>
           </section>
 
@@ -2012,10 +3050,208 @@ function App() {
               <FilePenLine className="h-3.5 w-3.5" />
               <span>{content.length} 字符</span>
             </div>
-            <span title={status}>{busy ? '处理中...' : status}</span>
+            <span title={status}>{busy ? '处理中...' : isSaving ? '保存中...' : isUploadingAttachment ? '上传附件中...' : status}</span>
           </footer>
         </main>
       </div>
+
+      <Dialog open={attachmentDialogOpen} onOpenChange={setAttachmentDialogOpen}>
+        <DialogContent className="w-[calc(100vw-24px)] max-w-[420px] rounded-[16px] border-[#E5E7EB] bg-[#FFFFFF] p-5">
+          <DialogTitle className="text-[18px] font-semibold text-[#111827]">附件存储设置</DialogTitle>
+          <DialogDescription className="text-[13px] text-[#6B7280]">
+            配置截图和附件上传到 WebDAV 的目录与链接格式。
+          </DialogDescription>
+
+          <div className="mt-3 grid gap-3">
+            <div className="grid gap-[6px]">
+              <Label htmlFor="sidebar-attachment-storage-mode" className="text-[12px] font-medium text-[#6B7280]">
+                附件存储方式
+              </Label>
+              <select
+                id="sidebar-attachment-storage-mode"
+                className="h-[42px] rounded-[6px] border border-[#D1D5DB] bg-[#FFFFFF] px-3 text-[13px] text-[#111827] focus-visible:border-[#3B82F6] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3B82F633]"
+                value={draftAttachmentSettings.storageMode}
+                onChange={(event) =>
+                  setDraftAttachmentSettings((prev) => ({
+                    ...prev,
+                    storageMode: event.target.value as AttachmentStorageMode,
+                  }))
+                }
+              >
+                <option value="same_dir_assets">同目录 _assets（推荐）</option>
+                <option value="root_attachments">统一 /_attachments</option>
+                <option value="doc_assets">文档同名 .assets</option>
+              </select>
+            </div>
+
+            <div className="grid gap-[6px]">
+              <Label htmlFor="sidebar-attachment-link-format" className="text-[12px] font-medium text-[#6B7280]">
+                附件链接格式
+              </Label>
+              <select
+                id="sidebar-attachment-link-format"
+                className="h-[42px] rounded-[6px] border border-[#D1D5DB] bg-[#FFFFFF] px-3 text-[13px] text-[#111827] focus-visible:border-[#3B82F6] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3B82F633]"
+                value={draftAttachmentSettings.linkFormat}
+                onChange={(event) =>
+                  setDraftAttachmentSettings((prev) => ({
+                    ...prev,
+                    linkFormat: event.target.value as AttachmentLinkFormat,
+                  }))
+                }
+              >
+                <option value="relative">相对路径（推荐）</option>
+                <option value="root_relative">根相对路径</option>
+                <option value="absolute_url">完整 URL</option>
+              </select>
+            </div>
+
+            <div className="grid gap-[6px]">
+              <Label htmlFor="sidebar-attachment-folder-name" className="text-[12px] font-medium text-[#6B7280]">
+                附件目录名
+              </Label>
+              <Input
+                id="sidebar-attachment-folder-name"
+                placeholder="_assets"
+                className="h-[42px] rounded-[6px] border-[#D1D5DB] bg-[#FFFFFF] px-3 text-[13px] text-[#111827] placeholder:text-[#9CA3AF] focus-visible:border-[#3B82F6] focus-visible:ring-[#3B82F633]"
+                value={draftAttachmentSettings.folderName}
+                onChange={(event) =>
+                  setDraftAttachmentSettings((prev) => ({
+                    ...prev,
+                    folderName: sanitizeAttachmentFolderName(event.target.value),
+                  }))
+                }
+              />
+            </div>
+
+            <div className="grid gap-[6px]">
+              <Label htmlFor="sidebar-attachment-max-size" className="text-[12px] font-medium text-[#6B7280]">
+                附件大小上限（MB）
+              </Label>
+              <Input
+                id="sidebar-attachment-max-size"
+                type="number"
+                min={1}
+                max={1024}
+                className="h-[42px] rounded-[6px] border-[#D1D5DB] bg-[#FFFFFF] px-3 text-[13px] text-[#111827] placeholder:text-[#9CA3AF] focus-visible:border-[#3B82F6] focus-visible:ring-[#3B82F633]"
+                value={draftAttachmentSettings.maxSizeMB}
+                onChange={(event) =>
+                  setDraftAttachmentSettings((prev) => ({
+                    ...prev,
+                    maxSizeMB: Math.max(1, Math.min(1024, Number(event.target.value) || 1)),
+                  }))
+                }
+              />
+            </div>
+          </div>
+
+          <p className="mt-4 text-[12px] text-[#9A3412]">
+            可清理当前附件目录下未被任何 Markdown 引用的附件文件。
+          </p>
+
+          <div className="mt-3 flex items-center justify-between gap-2">
+            <Button
+              variant="outline"
+              className="border-[#FECACA] text-[#B91C1C] hover:bg-[#FEF2F2]"
+              onClick={() => {
+                void onCleanupUnusedAttachments()
+              }}
+              disabled={!isConnected || isCleaningAttachments || busy}
+            >
+              {isCleaningAttachments ? '清理中...' : '清理未引用附件'}
+            </Button>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" onClick={() => setAttachmentDialogOpen(false)}>
+                取消
+              </Button>
+              <Button onClick={onSaveAttachmentSettings}>保存</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(previewDialog)}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) {
+            closePreviewDialog()
+          }
+        }}
+      >
+        <DialogContent className="h-[min(78vh,640px)] w-[calc(100vw-24px)] max-w-[760px] overflow-hidden rounded-[16px] border-[#E5E7EB] bg-[#FFFFFF] p-0">
+          <DialogTitle className="sr-only">文件预览</DialogTitle>
+          <DialogDescription className="sr-only">预览文本、图片、视频、音频和 PDF 文件。</DialogDescription>
+
+          {previewDialog ? (
+            <div className="flex h-full flex-col">
+              <div className="flex items-center gap-3 border-b border-[#E5E7EB] px-4 py-3 pr-14">
+                <div className="min-w-0 flex-1">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <p className="truncate text-sm font-semibold text-[#111827]">{previewDialog.file.name}</p>
+                    <span className="shrink-0 rounded-full bg-[#EFF6FF] px-2 py-1 text-[11px] font-medium text-[#1D4ED8]">
+                      {previewTypeLabel}
+                    </span>
+                  </div>
+                  <p className="truncate text-xs text-[#6B7280]">{previewDialog.file.path}</p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 shrink-0"
+                  onClick={() => {
+                    void downloadPreviewFile()
+                  }}
+                  disabled={!canDownloadPreview}
+                  title="下载原文件"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  <span className="ml-1 text-xs">下载</span>
+                </Button>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-auto bg-[#F8FAFC] p-4">
+                {previewDialog.loading ? (
+                  <div className="flex h-full min-h-[220px] items-center justify-center gap-2 text-sm text-[#64748B]">
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                    <span>加载预览中...</span>
+                  </div>
+                ) : previewDialog.error ? (
+                  <div className="flex h-full min-h-[220px] items-center justify-center">
+                    <p className="rounded-[8px] border border-[#FECACA] bg-[#FEF2F2] px-3 py-2 text-sm text-[#B91C1C]">
+                      预览失败：{previewDialog.error}
+                    </p>
+                  </div>
+                ) : previewDialog.kind === 'text' ? (
+                  <pre className="h-full min-h-[220px] whitespace-pre-wrap break-words rounded-[8px] border border-[#E2E8F0] bg-[#FFFFFF] p-4 font-mono text-[13px] leading-6 text-[#111827]">
+                    {previewDialog.textContent || '（空文本文件）'}
+                  </pre>
+                ) : previewDialog.kind === 'image' ? (
+                  <div className="flex h-full min-h-[220px] items-center justify-center">
+                    <img
+                      src={previewDialog.objectUrl}
+                      alt={previewDialog.file.name}
+                      className="max-h-full max-w-full rounded-[8px] border border-[#E2E8F0] bg-[#FFFFFF] object-contain shadow-sm"
+                    />
+                  </div>
+                ) : previewDialog.kind === 'audio' ? (
+                  <div className="flex h-full min-h-[220px] items-center justify-center">
+                    <audio src={previewDialog.objectUrl} controls className="w-full max-w-[560px]" />
+                  </div>
+                ) : previewDialog.kind === 'pdf' ? (
+                  <iframe
+                    src={previewDialog.objectUrl}
+                    className="h-full min-h-[220px] w-full rounded-[8px] border border-[#E2E8F0] bg-[#FFFFFF]"
+                    title={previewDialog.file.name}
+                  />
+                ) : (
+                  <div className="h-full min-h-[220px]">
+                    <video src={previewDialog.objectUrl} controls className="h-full w-full rounded-[8px] border border-[#E2E8F0] bg-black" />
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
 
       {contextMenu && contextPosition ? (
         <div
@@ -2032,7 +3268,7 @@ function App() {
                   void onSelectFile(menuPath)
                 }}
               >
-                打开文件
+                {openFileMenuLabel}
               </button>
               <button
                 className="w-full rounded-[6px] px-3 py-2 text-left text-sm text-[var(--mf-muted-strong)] hover:bg-[var(--mf-surface-muted)]"

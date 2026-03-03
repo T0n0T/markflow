@@ -132,87 +132,58 @@ body {
   color: var(--mf-text);
 }
 
-.wysiwyg-editor h1,
-.wysiwyg-editor h2,
-.wysiwyg-editor h3,
-.wysiwyg-editor h4,
-.wysiwyg-editor h5,
-.wysiwyg-editor h6 {
-  margin: 1.15rem 0 0.65rem;
-  font-weight: 600;
-  line-height: 1.35;
+.crepe-editor-shell {
+  height: 100%;
+  overflow: auto;
+  background: var(--mf-surface);
 }
 
-.wysiwyg-editor h1 {
-  font-size: 1.45rem;
+.crepe-editor-shell .milkdown {
+  min-height: 100%;
+  background: var(--mf-surface);
 }
 
-.wysiwyg-editor h2 {
-  font-size: 1.25rem;
-}
-
-.wysiwyg-editor p {
-  margin: 0.6rem 0;
-}
-
-.wysiwyg-editor ul,
-.wysiwyg-editor ol {
-  margin: 0.6rem 0;
-  padding-left: 1.35rem;
-}
-
-.wysiwyg-editor li {
-  margin: 0.28rem 0;
-}
-
-.wysiwyg-editor blockquote {
-  margin: 0.85rem 0;
-  border-left: 3px solid var(--mf-quote-border);
-  background: var(--mf-quote-bg);
-  padding: 0.55rem 0.8rem;
+.crepe-editor-shell .milkdown .ProseMirror {
+  min-height: 100%;
+  padding: 24px 96px 32px 112px;
   color: var(--mf-text);
 }
 
-.wysiwyg-editor pre {
-  margin: 0.8rem 0;
-  overflow-x: auto;
-  border-radius: 8px;
-  background: var(--mf-code-bg);
-  color: var(--mf-code-text);
-  padding: 0.75rem 0.9rem;
-  font-family: "JetBrains Mono", "Cascadia Code", "Consolas", monospace;
-  font-size: 0.82rem;
+/* Keep line-hover block indicators visible above editor content. */
+.crepe-editor-shell .milkdown .milkdown-block-handle {
+  z-index: 20;
 }
 
-.wysiwyg-editor code {
-  border-radius: 4px;
+.crepe-editor-shell .milkdown .milkdown-block-handle[data-show='true'] .operation-item {
+  background: color-mix(in srgb, var(--mf-accent) 8%, transparent);
+}
+
+.crepe-editor-shell.crepe-editor-readonly .milkdown .ProseMirror {
   background: var(--mf-surface-muted);
-  padding: 0.1rem 0.3rem;
-  font-family: "JetBrains Mono", "Cascadia Code", "Consolas", monospace;
-  font-size: 0.8rem;
+  color: var(--mf-muted);
 }
 
-.wysiwyg-editor pre code {
-  background: transparent;
-  padding: 0;
+@media (max-width: 960px) {
+  .crepe-editor-shell .milkdown .ProseMirror {
+    padding: 20px 24px 28px 68px;
+  }
 }
 
-.wysiwyg-editor table {
-  margin: 0.9rem 0;
-  border-collapse: collapse;
-  width: 100%;
-  table-layout: fixed;
+@keyframes mf-save-icon-flash {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  40% {
+    opacity: 0.2;
+    transform: scale(0.82);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
-.wysiwyg-editor th,
-.wysiwyg-editor td {
-  border: 1px solid var(--mf-border-soft);
-  padding: 0.35rem 0.5rem;
-  text-align: left;
-  vertical-align: top;
-}
-
-.wysiwyg-editor th {
-  background: var(--mf-surface-muted);
-  font-weight: 600;
+.mf-save-icon-flash {
+  animation: mf-save-icon-flash 420ms ease-out 1;
 }
