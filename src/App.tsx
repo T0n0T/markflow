@@ -131,6 +131,7 @@ function App() {
   const [directories, setDirectories] = useState<string[]>([])
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({})
   const [activeFilePath, setActiveFilePath] = useState('')
+  const [selectedFilePaths, setSelectedFilePaths] = useState<string[]>([])
   const [previewDialog, setPreviewDialog] = useState<PreviewDialogState | null>(null)
   const [content, setContent] = useState(DEFAULT_MARKDOWN)
   const [status, setStatus] = useState('未连接 WebDAV')
@@ -155,12 +156,14 @@ function App() {
   const isConnected = client !== null
   const canEditDocument = isConnected && Boolean(activeFilePath)
   const canUseEditorActions = canEditDocument && !busy
+  const hasUnsavedChanges = Boolean(activeFilePath) && content !== historyRef.current[0]
   const fileMap = useMemo(() => new Map(files.map((item) => [item.path, item])), [files])
   const selectedFilePath = previewDialog?.file.path ?? activeFilePath
+  const selectedFilePathSet = useMemo(() => new Set(selectedFilePaths), [selectedFilePaths])
   const rootPath = normalizeRootPath(config?.rootPath ?? draftConfig.rootPath ?? DEFAULT_ROOT_PATH)
   const folderTree = useMemo(() => buildFolderTree(files, directories, rootPath), [files, directories, rootPath])
   const sidebarStatusLabel = isConnected ? config?.url || '已连接 WebDAV' : busy ? '连接中...' : '未连接 WebDAV'
-  const sidebarStatusDotClass = isConnected ? 'text-[var(--mf-success)]' : busy ? 'text-[var(--mf-feedback)]' : 'text-[var(--mf-warning)]'
+  const sidebarStatusDotClass = isConnected ? 'text-[#22c55e]' : busy ? 'text-[var(--mf-feedback)]' : 'text-[var(--mf-warning)]'
   const sidebarStatusTextClass = isConnected
     ? 'text-[var(--mf-muted-strong)]'
     : busy
@@ -216,6 +219,13 @@ function App() {
     mediaQuery.addListener(syncTheme)
     return () => mediaQuery.removeListener(syncTheme)
   }, [themePreference])
+
+  useEffect(() => {
+    setSelectedFilePaths((prev) => {
+      const next = prev.filter((path) => fileMap.has(path))
+      return next.length === prev.length ? prev : next
+    })
+  }, [fileMap])
 
   const setContentWithHistory = useCallback((nextContent: string, options?: { resetHistory?: boolean; trackHistory?: boolean }) => {
     const normalized = nextContent.replace(/\r\n?/g, '\n')
@@ -442,6 +452,7 @@ function App() {
       const targetPath = pickMarkdownTargetPath(snapshot.files, preferredPath, activeFilePath)
       if (!targetPath) {
         setActiveFilePath('')
+        setSelectedFilePaths([])
         setContentWithHistory('# 空目录\n\n当前目录没有 Markdown 文件。\n\n你仍可点击文本、图片、视频、音频、PDF 文件进行预览。', {
           resetHistory: true,
         })
@@ -499,9 +510,11 @@ function App() {
 
         const targetPath = pickMarkdownTargetPath(snapshot.files)
         if (targetPath) {
+          setSelectedFilePaths([targetPath])
           await readFile(nextClient, targetPath)
         } else {
           setActiveFilePath('')
+          setSelectedFilePaths([])
           setContentWithHistory('# 空目录\n\n当前目录没有 Markdown 文件。\n\n你仍可点击文本、图片、视频、音频、PDF 文件进行预览。', {
             resetHistory: true,
           })
@@ -515,6 +528,7 @@ function App() {
         setFiles([])
         setDirectories([])
         setActiveFilePath('')
+        setSelectedFilePaths([])
         closePreviewDialog()
         notifyError('连接失败', error)
         return false
@@ -569,6 +583,35 @@ function App() {
     }
   }, [closeEditorContextMenu, contextMenu, editorContextMenu, setContextMenu])
 
+  const onSave = useCallback(async () => {
+    if (!client || !activeFilePath) {
+      notifyError('未选择可保存的文件')
+      return false
+    }
+
+    if (isSaving) {
+      return false
+    }
+
+    setIsSaving(true)
+    setSaveIconFlash(false)
+    try {
+      await writeRemoteTextFile(client, activeFilePath, contentRef.current)
+      historyRef.current = [contentRef.current]
+      historyIndexRef.current = 0
+      setStatus(`已保存：${activeFilePath}`)
+      return true
+    } catch (error) {
+      notifyError('保存失败', error)
+      return false
+    } finally {
+      setIsSaving(false)
+      requestAnimationFrame(() => {
+        setSaveIconFlash(true)
+      })
+    }
+  }, [activeFilePath, client, isSaving, notifyError])
+
   const onSelectFile = useCallback(
     async (filePath: string) => {
       if (!client) {
@@ -582,6 +625,26 @@ function App() {
         notifyError(`文件不存在：${normalizedPath}`)
         return
       }
+
+      if (normalizedPath !== activeFilePath && hasUnsavedChanges) {
+        const shouldSave = window.confirm('当前文件有未保存修改，是否先保存再切换？\n点击“确定”保存并切换，点击“取消”保留当前编辑内容。')
+        if (!shouldSave) {
+          setStatus('已取消切换：当前文件有未保存修改')
+          return
+        }
+        const saveSucceeded = await onSave()
+        if (!saveSucceeded) {
+          return
+        }
+      }
+
+      if (selected.kind === 'markdown' && normalizedPath === activeFilePath) {
+        closePreviewDialog()
+        setSelectedFilePaths([normalizedPath])
+        return
+      }
+
+      setSelectedFilePaths([normalizedPath])
 
       if (selected.kind !== 'markdown') {
         await openPreviewFile(client, selected)
@@ -599,7 +662,20 @@ function App() {
         setBusy(false)
       }
     },
-    [client, closePreviewDialog, fileMap, notifyError, openPreviewFile, readFile],
+    [activeFilePath, client, closePreviewDialog, fileMap, hasUnsavedChanges, notifyError, onSave, openPreviewFile, readFile],
+  )
+
+  const onToggleFileSelection = useCallback(
+    (filePath: string) => {
+      const normalizedPath = normalizeDavPath(filePath)
+      if (!fileMap.has(normalizedPath)) {
+        return
+      }
+      setSelectedFilePaths((prev) =>
+        prev.includes(normalizedPath) ? prev.filter((path) => path !== normalizedPath) : [...prev, normalizedPath],
+      )
+    },
+    [fileMap],
   )
 
   const onRefresh = useCallback(async () => {
@@ -807,33 +883,6 @@ function App() {
     }
   }, [saveIconFlash])
 
-  const onSave = useCallback(async () => {
-    if (!client || !activeFilePath) {
-      notifyError('未选择可保存的文件')
-      return
-    }
-
-    if (isSaving) {
-      return
-    }
-
-    setIsSaving(true)
-    setSaveIconFlash(false)
-    try {
-      await writeRemoteTextFile(client, activeFilePath, contentRef.current)
-      historyRef.current = [contentRef.current]
-      historyIndexRef.current = 0
-      setStatus(`已保存：${activeFilePath}`)
-    } catch (error) {
-      notifyError('保存失败', error)
-    } finally {
-      setIsSaving(false)
-      requestAnimationFrame(() => {
-        setSaveIconFlash(true)
-      })
-    }
-  }, [activeFilePath, client, isSaving, notifyError])
-
   const onLogout = useCallback(() => {
     localStorage.removeItem(CONFIG_KEY)
     setClient(null)
@@ -842,6 +891,7 @@ function App() {
     setDirectories([])
     setExpandedFolders({})
     setActiveFilePath('')
+    setSelectedFilePaths([])
     setDraftConfig({ ...EMPTY_CONFIG, attachments: { ...DEFAULT_ATTACHMENT_SETTINGS } })
     setRememberCredentials(false)
     setShowPassword(false)
@@ -1246,16 +1296,22 @@ function App() {
           onOpenConnectionSettings={() => setDialogOpen(true)}
           onOpenContextMenu={(event, path, kind) => {
             closeEditorContextMenu()
+            if (kind === 'file') {
+              const normalizedPath = normalizeDavPath(path)
+              setSelectedFilePaths((prev) => (prev.includes(normalizedPath) ? prev : [normalizedPath]))
+            }
             openFileTreeContextMenu(event, path, kind)
           }}
           onRefresh={() => {
             void onRefresh()
           }}
           onSelectFile={onSelectFile}
+          onToggleFileSelection={onToggleFileSelection}
           onToggleFolder={onToggleFolder}
           onToggleSidebar={() => setSidebarCollapsed((prev) => !prev)}
           rootPath={rootPath}
           selectedFilePath={selectedFilePath}
+          selectedFilePaths={selectedFilePathSet}
           sidebarCollapsed={sidebarCollapsed}
           sidebarStatusDotClass={sidebarStatusDotClass}
           sidebarStatusLabel={sidebarStatusLabel}
@@ -1629,6 +1685,9 @@ function App() {
                     }`}
                     value={content}
                     readOnly={!canUseEditorActions}
+                    spellCheck={false}
+                    autoCorrect="off"
+                    autoCapitalize="off"
                     onChange={(event) => setContentWithHistory(event.target.value)}
                     onContextMenu={onSourceEditorContextMenu}
                     onPasteCapture={onSourcePasteCapture}

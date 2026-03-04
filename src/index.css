@@ -104,6 +104,29 @@
   --mf-danger-soft: color-mix(in srgb, var(--destructive) 12%, var(--background));
   --mf-code-bg: color-mix(in srgb, var(--foreground) 85%, var(--background));
   --mf-code-text: var(--background);
+  --mf-code-block-bg: #101827;
+  --mf-code-block-text: #e2e8f0;
+  --mf-code-block-border: color-mix(in srgb, #334155 62%, #0f172a 38%);
+  --mf-code-gutter-border: color-mix(in srgb, #334155 72%, #0f172a 28%);
+  --mf-code-gutter-text: #94a3b8;
+  --mf-code-line-active: #1e293b;
+  --mf-code-selection: #334155;
+  --mf-code-cursor: #7dd3fc;
+  --mf-code-toolbar-bg: color-mix(in srgb, #334155 54%, #0f172a 46%);
+  --mf-code-toolbar-hover: color-mix(in srgb, #64748b 48%, #0f172a 52%);
+  --mf-code-toolbar-text: #e2e8f0;
+  --mf-code-token-keyword: #8bd5ff;
+  --mf-code-token-name: #ffe18b;
+  --mf-code-token-function: #ffb4dc;
+  --mf-code-token-number: #cdb7ff;
+  --mf-code-token-string: #94f2b6;
+  --mf-code-token-operator: #cfd8e5;
+  --mf-code-token-comment: #7a899f;
+  --mf-code-token-link: #9cc9ff;
+  --mf-mermaid-preview-bg: color-mix(in srgb, var(--card) 95%, #dbeafe 5%);
+  --mf-mermaid-preview-border: color-mix(in srgb, var(--mf-tone-blue) 32%, var(--border));
+  --mf-mermaid-error-bg: color-mix(in srgb, var(--mf-tone-red) 10%, var(--card));
+  --mf-mermaid-error-text: color-mix(in srgb, var(--mf-tone-red) 72%, #7f1d1d);
   --mf-quote-bg: color-mix(in srgb, var(--primary) 8%, var(--background));
   --mf-quote-border: color-mix(in srgb, var(--primary) 22%, var(--border));
   --mf-hero-glow: color-mix(in srgb, var(--ring) 45%, transparent);
@@ -193,6 +216,29 @@
   --mf-config-shell-bg: color-mix(in srgb, #162733 82%, var(--mf-tone-blue) 18%);
   --mf-config-hero-bg: color-mix(in srgb, var(--mf-tone-blue) 74%, #0d1f2b 26%);
   --mf-config-form-bg: color-mix(in srgb, #20303a 70%, var(--mf-tone-gray) 30%);
+  --mf-code-block-bg: #0b1220;
+  --mf-code-block-text: #dbe7f7;
+  --mf-code-block-border: color-mix(in srgb, #2f4663 68%, #0b1220 32%);
+  --mf-code-gutter-border: color-mix(in srgb, #2f4663 82%, #0b1220 18%);
+  --mf-code-gutter-text: #7f92ab;
+  --mf-code-line-active: #16243a;
+  --mf-code-selection: #284063;
+  --mf-code-cursor: #60a5fa;
+  --mf-code-toolbar-bg: color-mix(in srgb, #284063 58%, #0b1220 42%);
+  --mf-code-toolbar-hover: color-mix(in srgb, #3d5c87 60%, #0b1220 40%);
+  --mf-code-toolbar-text: #dbe7f7;
+  --mf-code-token-keyword: #7dd3fc;
+  --mf-code-token-name: #fde68a;
+  --mf-code-token-function: #f9a8d4;
+  --mf-code-token-number: #c4b5fd;
+  --mf-code-token-string: #86efac;
+  --mf-code-token-operator: #cbd5e1;
+  --mf-code-token-comment: #64748b;
+  --mf-code-token-link: #93c5fd;
+  --mf-mermaid-preview-bg: color-mix(in srgb, #102035 88%, #1f3048 12%);
+  --mf-mermaid-preview-border: color-mix(in srgb, #406089 62%, #1b2a40 38%);
+  --mf-mermaid-error-bg: color-mix(in srgb, #4b2330 72%, #102035 28%);
+  --mf-mermaid-error-text: #fecdd3;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -262,6 +308,29 @@
     --mf-config-shell-bg: color-mix(in srgb, #162733 82%, var(--mf-tone-blue) 18%);
     --mf-config-hero-bg: color-mix(in srgb, var(--mf-tone-blue) 74%, #0d1f2b 26%);
     --mf-config-form-bg: color-mix(in srgb, #20303a 70%, var(--mf-tone-gray) 30%);
+    --mf-code-block-bg: #0b1220;
+    --mf-code-block-text: #dbe7f7;
+    --mf-code-block-border: color-mix(in srgb, #2f4663 68%, #0b1220 32%);
+    --mf-code-gutter-border: color-mix(in srgb, #2f4663 82%, #0b1220 18%);
+    --mf-code-gutter-text: #7f92ab;
+    --mf-code-line-active: #16243a;
+    --mf-code-selection: #284063;
+    --mf-code-cursor: #60a5fa;
+    --mf-code-toolbar-bg: color-mix(in srgb, #284063 58%, #0b1220 42%);
+    --mf-code-toolbar-hover: color-mix(in srgb, #3d5c87 60%, #0b1220 40%);
+    --mf-code-toolbar-text: #dbe7f7;
+    --mf-code-token-keyword: #7dd3fc;
+    --mf-code-token-name: #fde68a;
+    --mf-code-token-function: #f9a8d4;
+    --mf-code-token-number: #c4b5fd;
+    --mf-code-token-string: #86efac;
+    --mf-code-token-operator: #cbd5e1;
+    --mf-code-token-comment: #64748b;
+    --mf-code-token-link: #93c5fd;
+    --mf-mermaid-preview-bg: color-mix(in srgb, #102035 88%, #1f3048 12%);
+    --mf-mermaid-preview-border: color-mix(in srgb, #406089 62%, #1b2a40 38%);
+    --mf-mermaid-error-bg: color-mix(in srgb, #4b2330 72%, #102035 28%);
+    --mf-mermaid-error-text: #fecdd3;
   }
 }
 
@@ -306,6 +375,88 @@ body {
 
 .crepe-editor-shell .milkdown .milkdown-block-handle[data-show='true'] .operation-item {
   background: color-mix(in srgb, var(--mf-accent) 8%, transparent);
+}
+
+.crepe-editor-shell .milkdown .milkdown-code-block {
+  margin: 12px 0;
+  padding: 10px 14px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--mf-code-block-border);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--mf-code-block-bg) 90%, #ffffff 10%),
+    var(--mf-code-block-bg) 20%
+  );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, #ffffff 10%, transparent),
+    0 8px 20px color-mix(in srgb, #020617 14%, transparent);
+}
+
+.crepe-editor-shell .milkdown .milkdown-code-block.selected {
+  outline: 1px solid color-mix(in srgb, var(--mf-code-cursor) 62%, transparent);
+}
+
+.crepe-editor-shell .milkdown .milkdown-code-block .cm-editor,
+.crepe-editor-shell .milkdown .milkdown-code-block .cm-gutters {
+  background: transparent;
+}
+
+.crepe-editor-shell .milkdown .milkdown-code-block .tools {
+  margin-bottom: 8px;
+}
+
+.crepe-editor-shell .milkdown .milkdown-code-block .tools .language-button,
+.crepe-editor-shell .milkdown .milkdown-code-block .tools .tools-button-group button {
+  opacity: 1;
+  background: var(--mf-code-toolbar-bg);
+  color: var(--mf-code-toolbar-text);
+}
+
+.crepe-editor-shell .milkdown .milkdown-code-block .tools .language-button:hover,
+.crepe-editor-shell .milkdown .milkdown-code-block .tools .tools-button-group button:hover {
+  background: var(--mf-code-toolbar-hover);
+}
+
+.crepe-editor-shell .milkdown .milkdown-code-block .preview-panel .preview {
+  margin-top: 4px;
+  border: 1px solid var(--mf-mermaid-preview-border);
+  border-radius: 10px;
+  background: var(--mf-mermaid-preview-bg);
+  color: var(--foreground);
+  padding: 12px;
+}
+
+.crepe-editor-shell .milkdown .milkdown-code-block .preview-panel .preview svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.crepe-editor-shell .milkdown .milkdown-code-block .preview-panel .preview svg text,
+.crepe-editor-shell .milkdown .milkdown-code-block .preview-panel .preview svg tspan {
+  fill: currentColor;
+}
+
+.mf-mermaid-preview-loading,
+.mf-mermaid-preview-empty,
+.mf-mermaid-preview-error {
+  margin: 0;
+  border-radius: 8px;
+  padding: 12px;
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.mf-mermaid-preview-loading,
+.mf-mermaid-preview-empty {
+  color: var(--mf-muted-strong);
+}
+
+.mf-mermaid-preview-error {
+  white-space: pre-wrap;
+  border: 1px solid color-mix(in srgb, var(--mf-mermaid-error-text) 28%, transparent);
+  background: var(--mf-mermaid-error-bg);
+  color: var(--mf-mermaid-error-text);
 }
 
 .crepe-editor-shell.crepe-editor-readonly .milkdown .ProseMirror {

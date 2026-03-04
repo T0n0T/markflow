@@ -29,11 +29,13 @@ type FileTreeSidebarProps = {
   onOpenContextMenu: (event: ReactMouseEvent, path: string, kind: ContextKind) => void
   onRefresh: () => void
   onSelectFile: (path: string) => Promise<void>
+  onToggleFileSelection: (path: string) => void
   onToggleFolder: (fullPath: string) => void
   onToggleSidebar: () => void
   onLogout: () => void
   rootPath: string
   selectedFilePath: string
+  selectedFilePaths: ReadonlySet<string>
   sidebarCollapsed: boolean
   sidebarStatusDotClass: string
   sidebarStatusLabel: string
@@ -64,11 +66,13 @@ export function FileTreeSidebar(props: FileTreeSidebarProps) {
     onOpenContextMenu,
     onRefresh,
     onSelectFile,
+    onToggleFileSelection,
     onToggleFolder,
     onToggleSidebar,
     onLogout,
     rootPath,
     selectedFilePath,
+    selectedFilePaths,
     sidebarCollapsed,
     sidebarStatusDotClass,
     sidebarStatusLabel,
@@ -109,17 +113,33 @@ export function FileTreeSidebar(props: FileTreeSidebarProps) {
 
     for (const file of node.files) {
       const active = file.path === selectedFilePath
+      const selected = selectedFilePaths.has(file.path)
 
       items.push(
         <button
           key={file.path}
           type="button"
-          onClick={() => void onSelectFile(file.path)}
-          onDoubleClick={() => void onSelectFile(file.path)}
+          onClick={(event) => {
+            if (event.ctrlKey || event.metaKey) {
+              event.preventDefault()
+              onToggleFileSelection(file.path)
+              return
+            }
+            void onSelectFile(file.path)
+          }}
+          onDoubleClick={(event) => {
+            if (event.ctrlKey || event.metaKey) {
+              return
+            }
+            void onSelectFile(file.path)
+          }}
           onContextMenu={(event) => onOpenContextMenu(event, file.path, 'file')}
+          aria-pressed={selected}
           className={`flex h-8 w-full items-center gap-2 rounded-[var(--mf-radius-md)] px-2 py-1 text-left text-[13px] transition-colors ${
             active
               ? 'bg-[var(--mf-accent-soft)] text-[var(--mf-accent)]'
+              : selected
+                ? 'bg-[var(--mf-surface-muted)] text-[var(--mf-muted-strong)] ring-1 ring-inset ring-[var(--mf-border)]'
               : 'text-[var(--mf-muted-strong)] hover:bg-[var(--mf-surface-muted)]'
           }`}
           style={{ paddingLeft: `${28 + depth * 12}px` }}
