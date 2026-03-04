@@ -19,7 +19,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 10.30.3
+          version: latest
           run_install: false
 
       - name: Setup Node.js
@@ -36,22 +36,23 @@ jobs:
 
       - name: Package dist
         run: |
-          tar -czf markflow-${{ github.ref_name }}-dist.tar.gz dist
-          zip -r markflow-${{ github.ref_name }}-dist.zip dist
+          tar -czf markflow-dist.tar.gz dist
+          zip -r markflow-dist.zip dist
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dist-${{ github.ref_name }}
+          name: dist-package
           path: |
-            markflow-${{ github.ref_name }}-dist.tar.gz
-            markflow-${{ github.ref_name }}-dist.zip
+            markflow-dist.tar.gz
+            markflow-dist.zip
           if-no-files-found: error
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          overwrite_files: true
           generate_release_notes: true
           files: |
-            markflow-${{ github.ref_name }}-dist.tar.gz
-            markflow-${{ github.ref_name }}-dist.zip
+            markflow-dist.tar.gz
+            markflow-dist.zip
