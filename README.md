@@ -52,3 +52,29 @@ pnpm build
 ```
 
 建议在提交前至少执行一次 `pnpm lint && pnpm build`。
+
+## Docker 部署
+
+项目已提供多阶段构建 `Dockerfile`，会先执行 `pnpm build`，再用 Nginx 托管 `dist` 静态文件。
+
+### 构建镜像
+
+```bash
+docker build -t markflow:latest .
+```
+
+### 运行容器
+
+```bash
+docker run -d --name markflow -p 8080:80 --restart unless-stopped markflow:latest
+```
+
+启动后访问：`http://localhost:8080`
+
+### 健康检查
+
+```bash
+curl http://localhost:8080/healthz
+```
+
+更多说明见：`docs/docker-deploy.md`
