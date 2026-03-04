@@ -5,6 +5,9 @@ import { MilkdownProvider } from '@milkdown/react'
 import './index.css'
 import App from './App'
 import { Toaster } from '@/components/ui/sonner'
+import { initializeTheme } from '@/lib/theme'
+
+initializeTheme()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

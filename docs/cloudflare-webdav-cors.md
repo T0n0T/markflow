@@ -1,4 +1,4 @@
-# Cloudflare WebDAV 跨域配置记录（`pan.718294.xyz/dav`）
+# Cloudflare WebDAV 跨域配置记录（`test.webdav/dav`）
 
 > 记录时间：2026-03-04
 
@@ -8,7 +8,7 @@
 
 - 现象：
   - 系统级 WebDAV 挂载可用
-  - 浏览器前端请求 `https://pan.718294.xyz/dav` 失败
+  - 浏览器前端请求 `https://test.webdav/dav` 失败
 - 根因：
   - Access 应用路径只匹配 `/dav/`，未覆盖 `/dav`
   - CORS 规则也只匹配 `/dav/`，导致 `/dav` 与 `/dav/...` 返回头不一致
@@ -17,9 +17,9 @@
 
 - 应用：`webdav`
 - 域匹配从：
-  - `pan.718294.xyz/dav/`
+  - `test.webdav/dav/`
 - 调整为：
-  - `pan.718294.xyz/dav*`
+  - `test.webdav/dav*`
 - 策略：`bypass`（`everyone`）
 - 选项：`options_preflight_bypass = true`
 
@@ -29,7 +29,7 @@
 
 - Phase：`http_response_headers_transform`
 - 表达式：
-  - `http.host eq "pan.718294.xyz" and starts_with(http.request.uri.path, "/dav")`
+  - `http.host eq "test.webdav" and starts_with(http.request.uri.path, "/dav")`
 - 动作：`rewrite`
 - 规则 ID：`c27d9f76480549c984451137c2d444d8`
 - 描述：`webdav-cors`
@@ -46,12 +46,12 @@
 ## 4. 验证命令
 
 ```bash
-curl -si -X OPTIONS 'https://pan.718294.xyz/dav' \
+curl -si -X OPTIONS 'https://test.webdav/dav' \
   -H 'Origin: http://localhost:5173' \
   -H 'Access-Control-Request-Method: PROPFIND' \
   -H 'Access-Control-Request-Headers: authorization,depth,content-type'
 
-curl -si -X OPTIONS 'https://pan.718294.xyz/dav/projects/markflow' \
+curl -si -X OPTIONS 'https://test.webdav/dav/projects/markflow' \
   -H 'Origin: http://localhost:5173' \
   -H 'Access-Control-Request-Method: PROPFIND' \
   -H 'Access-Control-Request-Headers: authorization,depth,content-type'

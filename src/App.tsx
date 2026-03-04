@@ -54,11 +54,14 @@ import {
   ListOrdered,
   LogIn,
   LogOut,
+  Monitor,
+  Moon,
   Quote,
   Redo2,
   RefreshCw,
   Save,
   Settings2,
+  Sun,
   Table2,
   Undo2,
   Paperclip,
@@ -88,6 +91,13 @@ import {
   resolveMarkdownLinkToDavPath,
   sanitizeAttachmentFolderName,
 } from '@/lib/attachments'
+import {
+  readThemePreference,
+  resolveTheme,
+  setThemePreference as persistThemePreference,
+  type ResolvedTheme,
+  type ThemePreference,
+} from '@/lib/theme'
 import { toast } from 'sonner'
 import '@milkdown/crepe/theme/common/style.css'
 import '@milkdown/crepe/theme/frame.css'
@@ -177,6 +187,12 @@ const DEFAULT_ROOT_PATH = '/'
 const DEFAULT_MARKDOWN = '# 会议记录\n\n- WebDAV 已连接\n\n- 今日目标：编辑 markdown 文件并同步到云端\n'
 const MENU_WIDTH = 220
 const MENU_HEIGHT = 250
+const THEME_PREFERENCE_ORDER: ThemePreference[] = ['system', 'light', 'dark']
+const THEME_PREFERENCE_LABEL: Record<ThemePreference, string> = {
+  dark: '深色',
+  light: '浅色',
+  system: '跟随系统',
+}
 const MARKDOWN_FILE_EXTENSIONS = new Set(['md', 'markdown'])
 const TEXT_FILE_EXTENSIONS = new Set([
   'txt',
@@ -432,6 +448,14 @@ function getPreviewTypeLabel(kind: PreviewFileKind) {
     return '音频'
   }
   return 'PDF'
+}
+
+function getNextThemePreference(preference: ThemePreference): ThemePreference {
+  const currentIndex = THEME_PREFERENCE_ORDER.indexOf(preference)
+  if (currentIndex < 0) {
+    return THEME_PREFERENCE_ORDER[0]
+  }
+  return THEME_PREFERENCE_ORDER[(currentIndex + 1) % THEME_PREFERENCE_ORDER.length]
 }
 
 function extractMarkdownLinkTargets(markdown: string) {
@@ -1088,6 +1112,8 @@ function App() {
   const [editorMode, setEditorMode] = useState<EditorMode>('wysiwyg')
   const [wysiwygSyncVersion, setWysiwygSyncVersion] = useState(0)
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
+  const [themePreference, setThemePreferenceState] = useState<ThemePreference>(() => readThemePreference())
+  const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => resolveTheme(readThemePreference()))
 
   const attachmentInputRef = useRef<HTMLInputElement>(null)
   const sourceEditorRef = useRef<HTMLTextAreaElement>(null)
@@ -1109,11 +1135,43 @@ function App() {
   const rootPath = normalizeRootPath(config?.rootPath ?? draftConfig.rootPath ?? DEFAULT_ROOT_PATH)
   const folderTree = useMemo(() => buildFolderTree(files, directories, rootPath), [files, directories, rootPath])
   const sidebarStatusLabel = isConnected ? config?.url || '已连接 WebDAV' : busy ? '连接中...' : '未连接 WebDAV'
-  const sidebarStatusDotClass = isConnected ? 'text-[var(--mf-success)]' : busy ? 'text-[#F59E0B]' : 'text-[#94A3B8]'
-  const sidebarStatusTextClass = isConnected ? 'text-[#4B5563]' : busy ? 'text-[#9A3412]' : 'text-[#6B7280]'
-  const sidebarTreeContainerStyle = { boxShadow: '0 1px 6px rgba(0, 0, 0, 0.08)' } as const
+  const sidebarStatusDotClass = isConnected ? 'text-[var(--mf-success)]' : busy ? 'text-[var(--mf-feedback)]' : 'text-[var(--mf-warning)]'
+  const sidebarStatusTextClass = isConnected
+    ? 'text-[var(--mf-muted-strong)]'
+    : busy
+      ? 'text-[var(--mf-feedback-strong)]'
+      : 'text-[var(--mf-warning-strong)]'
+  const nextThemePreference = getNextThemePreference(themePreference)
+  const themeButtonTitle = `主题：${THEME_PREFERENCE_LABEL[themePreference]}（点击切换到${THEME_PREFERENCE_LABEL[nextThemePreference]}）`
+  const ThemePreferenceIcon = themePreference === 'system' ? Monitor : resolvedTheme === 'dark' ? Moon : Sun
 
   const isFolderOpen = useCallback((fullPath: string) => expandedFolders[fullPath] ?? true, [expandedFolders])
+  const onToggleThemePreference = useCallback(() => {
+    const nextPreference = getNextThemePreference(themePreference)
+    persistThemePreference(nextPreference)
+    setThemePreferenceState(nextPreference)
+  }, [themePreference])
+
+  useEffect(() => {
+    setResolvedTheme(resolveTheme(themePreference))
+
+    if (themePreference !== 'system' || typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return
+    }
+
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
+    const syncTheme = () => {
+      setResolvedTheme(mediaQuery.matches ? 'dark' : 'light')
+    }
+
+    if (typeof mediaQuery.addEventListener === 'function') {
+      mediaQuery.addEventListener('change', syncTheme)
+      return () => mediaQuery.removeEventListener('change', syncTheme)
+    }
+
+    mediaQuery.addListener(syncTheme)
+    return () => mediaQuery.removeListener(syncTheme)
+  }, [themePreference])
 
   const setContentWithHistory = useCallback((nextContent: string, options?: { resetHistory?: boolean; trackHistory?: boolean }) => {
     const normalized = nextContent.replace(/\r\n?/g, '\n')
@@ -2613,8 +2671,7 @@ function App() {
                 </div>
               ) : isConnected ? (
                 <div
-                  className="h-full rounded-[10px] border border-[#E5E7EB] bg-[#FFFFFF] p-2"
-                  style={sidebarTreeContainerStyle}
+                  className="h-full rounded-[10px] border border-[var(--mf-panel-border)] bg-[var(--mf-panel-bg)] p-2 shadow-[var(--mf-shadow-soft)]"
                   onContextMenu={(event) => openContextMenu(event, rootPath, 'root')}
                 >
                   <div className="rounded-[var(--mf-radius-md)] px-2 py-1.5">
@@ -2652,11 +2709,11 @@ function App() {
                   </div>
                 </div>
               ) : (
-                <div className="h-full rounded-[10px] border border-[#E5E7EB] bg-[#FFFFFF] p-3" style={sidebarTreeContainerStyle}>
+                <div className="h-full rounded-[10px] border border-[var(--mf-panel-border)] bg-[var(--mf-panel-bg)] p-3 shadow-[var(--mf-shadow-soft)]">
                   <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
-                    <FolderX className="h-5 w-5 text-[#94A3B8]" />
-                    <p className="text-[13px] font-medium text-[#475569]">未连接，无法读取文件</p>
-                    <p className="text-xs text-[#94A3B8]">连接 WebDAV 后显示文件树</p>
+                    <FolderX className="h-5 w-5 text-[var(--mf-warning)]" />
+                    <p className="text-[13px] font-medium text-[var(--mf-warning-strong)]">未连接，无法读取文件</p>
+                    <p className="text-xs text-[var(--mf-muted-soft)]">连接 WebDAV 后显示文件树</p>
                   </div>
                 </div>
               )}
@@ -2664,8 +2721,8 @@ function App() {
           </div>
         </aside>
 
-        <main className="flex min-w-0 flex-1 flex-col bg-[var(--mf-surface)]">
-          <header className="flex min-h-[52px] flex-wrap items-center justify-between gap-3 border-b border-[var(--mf-border)] px-4">
+        <main className="flex min-w-0 flex-1 flex-col bg-[var(--mf-main-shell-bg)]">
+          <header className="flex min-h-[52px] flex-wrap items-center justify-between gap-3 border-b border-[var(--mf-panel-border)] bg-[var(--mf-main-toolbar-bg)] px-4">
             <div className="flex flex-wrap items-center gap-1.5">
               <Button
                 variant="toolbar"
@@ -2789,6 +2846,15 @@ function App() {
 
             <div className="flex items-center gap-2">
               <Button
+                variant={themePreference === 'system' ? 'toolbar' : 'toolbarAccent'}
+                size="icon"
+                title={themeButtonTitle}
+                aria-label={themeButtonTitle}
+                onClick={onToggleThemePreference}
+              >
+                <ThemePreferenceIcon className="h-4 w-4" />
+              </Button>
+              <Button
                 variant="toolbar"
                 size="icon"
                 title={editorMode === 'wysiwyg' ? '切换到原文' : '切换到所见即所得'}
@@ -2827,8 +2893,8 @@ function App() {
               <Button
                 variant="toolbar"
                 size="icon"
-                className={`relative overflow-hidden text-[var(--mf-accent)] hover:bg-[var(--mf-accent-pale)] hover:text-[var(--mf-accent-strong)] active:bg-[var(--mf-accent-pale-hover)] active:text-[var(--mf-ring)] ${
-                  isSaving ? 'bg-[var(--mf-accent-pale)] text-[var(--mf-accent-strong)]' : ''
+                className={`relative overflow-hidden text-[var(--mf-feedback)] hover:bg-[var(--mf-feedback-soft)] hover:text-[var(--mf-feedback-strong)] active:bg-[var(--mf-feedback-soft)] active:text-[var(--mf-feedback-strong)] ${
+                  isSaving ? 'bg-[var(--mf-feedback-soft)] text-[var(--mf-feedback-strong)]' : ''
                 }`}
                 title={isSaving ? '保存中...' : '保存'}
                 aria-label="保存"
@@ -2837,7 +2903,7 @@ function App() {
                 disabled={!activeFilePath || busy || isSaving}
               >
                 <Save className={`h-4 w-4 ${saveIconFlash ? 'mf-save-icon-flash' : ''}`} />
-                {isSaving ? <span className="absolute bottom-0 left-1 right-1 h-[2px] rounded-full bg-[#3B82F6]" /> : null}
+                {isSaving ? <span className="absolute bottom-0 left-1 right-1 h-[2px] rounded-full bg-[var(--mf-feedback)]" /> : null}
               </Button>
               <Dialog
                 open={dialogOpen}
@@ -2860,7 +2926,7 @@ function App() {
                     <Settings2 className="h-4 w-4" />
                   </Button>
                 </DialogTrigger>
-                <DialogContent className="h-auto w-[calc(100vw-24px)] max-w-[900px] overflow-hidden rounded-[20px] border-[#E5E7EB] bg-[#FFFFFF] p-0 shadow-none md:h-[560px] [&>button:last-child]:hidden">
+                <DialogContent className="h-auto w-[calc(100vw-24px)] max-w-[900px] overflow-hidden rounded-[20px] border-[var(--mf-panel-border)] bg-[var(--mf-config-shell-bg)] p-0 shadow-none md:h-[560px] [&>button:last-child]:hidden">
                   <DialogTitle className="sr-only">WebDAV 连接设置</DialogTitle>
                   <DialogDescription className="sr-only">填写 URL、用户名和密码以连接远程 WebDAV 目录。</DialogDescription>
                   <button
@@ -2868,33 +2934,33 @@ function App() {
                     aria-label="关闭配置窗口"
                     title="关闭配置窗口"
                     onClick={() => setDialogOpen(false)}
-                    className="absolute right-2 top-2 z-10 inline-flex h-8 w-8 items-center justify-center rounded-full bg-transparent text-[16px] font-semibold leading-none text-[#64748B] transition-colors hover:bg-[#F1F5F9]"
+                    className="absolute right-2 top-2 z-10 inline-flex h-8 w-8 items-center justify-center rounded-full bg-transparent text-[16px] font-semibold leading-none text-[var(--mf-muted-soft)] transition-colors hover:bg-[var(--mf-panel-hover)]"
                   >
                     ×
                   </button>
                   <div className="grid md:h-full md:grid-cols-[520px_380px]">
-                    <div className="hidden h-full flex-col justify-center gap-[18px] rounded-[20px] bg-[#1D4ED8] px-6 py-8 md:flex">
-                      <p className="text-[42px] font-semibold leading-[1.06] tracking-[-0.01em] text-[#EAF1FF]">[WebDAV] Hello World!</p>
-                      <p className="text-[16px] text-[#BFDBFE]">Secure sync for your markdown workspace</p>
-                      <div className="w-fit overflow-hidden rounded-[16px] border border-[#93C5FD66]">
+                    <div className="hidden h-full flex-col items-center justify-center gap-[18px] rounded-[20px] bg-[var(--mf-config-hero-bg)] px-6 py-8 md:flex">
+                      <p className="text-[42px] font-semibold leading-[1.06] tracking-[-0.01em] text-[var(--mf-brand-title)]">[WebDAV] Hello World!</p>
+                      <p className="text-[16px] text-[var(--mf-brand-subtitle)]">Secure sync for your markdown workspace</p>
+                      <div className="w-fit overflow-hidden rounded-[16px] border border-[var(--mf-brand-soft-border)]">
                         <img src="/heroCard1.png" alt="WebDAV hero card" className="h-[220px] w-[320px] object-cover" />
                       </div>
                     </div>
 
-                    <div className="flex h-full min-h-[520px] flex-col items-center justify-center rounded-[20px] bg-[#F8FAFC] px-6 py-8 sm:px-9 md:min-h-0 md:px-9 md:py-12">
+                    <div className="flex h-full min-h-[520px] flex-col items-center justify-center rounded-[20px] bg-[var(--mf-config-form-bg)] px-6 py-8 sm:px-9 md:min-h-0 md:px-9 md:py-12">
                       <div className="w-full max-w-[320px]">
-                        <p className="text-center text-[32px] font-bold leading-none text-[#1F2937]">MarkFlow~</p>
+                        <p className="text-center text-[32px] font-bold leading-none text-[var(--mf-field-text)]">MarkFlow~</p>
                       </div>
 
                       <div className="mt-[14px] grid w-full max-w-[320px] gap-[10px]">
                         <div className="grid gap-[6px]">
-                          <Label htmlFor="webdav-url" className="text-[11px] font-medium text-[#6B7280]">
+                          <Label htmlFor="webdav-url" className="text-[11px] font-medium text-[var(--mf-muted)]">
                             URL
                           </Label>
                           <Input
                             id="webdav-url"
                             placeholder="https://dav.example.com"
-                            className="h-[42px] rounded-[6px] border-[#D1D5DB] bg-[#FFFFFF] px-3 text-[13px] text-[#111827] placeholder:text-[#9CA3AF] focus-visible:border-[#3B82F6] focus-visible:ring-[#3B82F633]"
+                            className="h-[42px] rounded-[6px] border-[var(--mf-field-border)] bg-[var(--mf-field-bg)] px-3 text-[13px] text-[var(--mf-field-text)] placeholder:text-[var(--mf-field-placeholder)] focus-visible:border-[var(--mf-field-focus)] focus-visible:ring-[var(--mf-field-focus-ring)]"
                             value={draftConfig.url}
                             onChange={(event) =>
                               setDraftConfig((prev) => ({
@@ -2906,13 +2972,13 @@ function App() {
                         </div>
 
                         <div className="grid gap-[6px]">
-                          <Label htmlFor="webdav-username" className="text-[11px] font-medium text-[#6B7280]">
+                          <Label htmlFor="webdav-username" className="text-[11px] font-medium text-[var(--mf-muted)]">
                             用户名（可选）
                           </Label>
                           <Input
                             id="webdav-username"
                             placeholder="admin"
-                            className="h-[42px] rounded-[6px] border-[#D1D5DB] bg-[#FFFFFF] px-3 text-[13px] text-[#111827] placeholder:text-[#9CA3AF] focus-visible:border-[#3B82F6] focus-visible:ring-[#3B82F633]"
+                            className="h-[42px] rounded-[6px] border-[var(--mf-field-border)] bg-[var(--mf-field-bg)] px-3 text-[13px] text-[var(--mf-field-text)] placeholder:text-[var(--mf-field-placeholder)] focus-visible:border-[var(--mf-field-focus)] focus-visible:ring-[var(--mf-field-focus-ring)]"
                             value={draftConfig.username}
                             onChange={(event) =>
                               setDraftConfig((prev) => ({
@@ -2924,7 +2990,7 @@ function App() {
                         </div>
 
                         <div className="grid gap-[6px]">
-                          <Label htmlFor="webdav-password" className="text-[11px] font-medium text-[#6B7280]">
+                          <Label htmlFor="webdav-password" className="text-[11px] font-medium text-[var(--mf-muted)]">
                             密码（可选）
                           </Label>
                           <div className="relative">
@@ -2932,7 +2998,7 @@ function App() {
                               id="webdav-password"
                               type={showPassword ? 'text' : 'password'}
                               placeholder="••••••••"
-                              className="h-[42px] rounded-[6px] border-[#D1D5DB] bg-[#FFFFFF] px-3 pr-9 text-[13px] text-[#111827] placeholder:text-[#9CA3AF] focus-visible:border-[#3B82F6] focus-visible:ring-[#3B82F633]"
+                              className="h-[42px] rounded-[6px] border-[var(--mf-field-border)] bg-[var(--mf-field-bg)] px-3 pr-9 text-[13px] text-[var(--mf-field-text)] placeholder:text-[var(--mf-field-placeholder)] focus-visible:border-[var(--mf-field-focus)] focus-visible:ring-[var(--mf-field-focus-ring)]"
                               value={draftConfig.password}
                               onChange={(event) =>
                                 setDraftConfig((prev) => ({
@@ -2944,7 +3010,7 @@ function App() {
                             <button
                               type="button"
                               onClick={() => setShowPassword((prev) => !prev)}
-                              className="absolute right-2 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-[4px] text-[#6B7280] hover:bg-[#E5E7EB]"
+                              className="absolute right-2 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-[4px] text-[var(--mf-muted)] hover:bg-[var(--mf-panel-border)]"
                               aria-label={showPassword ? '隐藏密码' : '显示密码'}
                               title={showPassword ? '隐藏密码' : '显示密码'}
                             >
@@ -2953,18 +3019,18 @@ function App() {
                           </div>
                         </div>
 
-                        <label className="inline-flex cursor-pointer items-center gap-2 pt-[2px] text-[13px] text-[#4B5563]">
+                        <label className="inline-flex cursor-pointer items-center gap-2 pt-[2px] text-[13px] text-[var(--mf-muted-strong)]">
                           <input
                             type="checkbox"
                             checked={rememberCredentials}
                             onChange={(event) => setRememberCredentials(event.target.checked)}
-                            className="h-4 w-4 rounded-[4px] border border-[#CBD5E1] accent-[#3B82F6]"
+                            className="h-4 w-4 rounded-[4px] border border-[var(--mf-preview-border)] accent-[var(--mf-brand)]"
                           />
                           记住连接凭证
                         </label>
 
                         <Button
-                          className="h-[42px] rounded-[6px] bg-[#3B82F6] text-[16px] font-semibold text-[#FFFFFF] hover:bg-[#2563EB]"
+                          className="h-[42px] rounded-[6px] border border-[var(--mf-feedback-soft-border)] bg-[var(--mf-feedback)] text-[16px] font-semibold text-[var(--mf-feedback-contrast)] hover:bg-[var(--mf-feedback-strong)]"
                           onClick={() => {
                             const nextConfig = {
                               ...draftConfig,
@@ -2999,10 +3065,9 @@ function App() {
             </div>
           </header>
 
-          <section className="flex-1 overflow-hidden bg-[var(--mf-surface)] p-6">
+          <section className="flex-1 overflow-hidden bg-[var(--mf-main-content-bg)] p-6">
             <div
-              className="h-full rounded-[10px] border border-[#E5E7EB] bg-[#FFFFFF] p-3"
-              style={sidebarTreeContainerStyle}
+              className="h-full rounded-[10px] border border-[var(--mf-panel-border)] bg-[var(--mf-panel-bg)] p-3 shadow-[var(--mf-shadow-soft)]"
             >
               <div className="h-full overflow-hidden rounded-[8px] bg-[var(--mf-surface)]">
                 {!isConnected ? (
@@ -3056,20 +3121,20 @@ function App() {
       </div>
 
       <Dialog open={attachmentDialogOpen} onOpenChange={setAttachmentDialogOpen}>
-        <DialogContent className="w-[calc(100vw-24px)] max-w-[420px] rounded-[16px] border-[#E5E7EB] bg-[#FFFFFF] p-5">
-          <DialogTitle className="text-[18px] font-semibold text-[#111827]">附件存储设置</DialogTitle>
-          <DialogDescription className="text-[13px] text-[#6B7280]">
+        <DialogContent className="w-[calc(100vw-24px)] max-w-[420px] rounded-[16px] border-[var(--mf-panel-border)] bg-[var(--mf-panel-bg)] p-5">
+          <DialogTitle className="text-[18px] font-semibold text-[var(--mf-field-text)]">附件存储设置</DialogTitle>
+          <DialogDescription className="text-[13px] text-[var(--mf-muted)]">
             配置截图和附件上传到 WebDAV 的目录与链接格式。
           </DialogDescription>
 
           <div className="mt-3 grid gap-3">
             <div className="grid gap-[6px]">
-              <Label htmlFor="sidebar-attachment-storage-mode" className="text-[12px] font-medium text-[#6B7280]">
+              <Label htmlFor="sidebar-attachment-storage-mode" className="text-[12px] font-medium text-[var(--mf-muted)]">
                 附件存储方式
               </Label>
               <select
                 id="sidebar-attachment-storage-mode"
-                className="h-[42px] rounded-[6px] border border-[#D1D5DB] bg-[#FFFFFF] px-3 text-[13px] text-[#111827] focus-visible:border-[#3B82F6] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3B82F633]"
+                className="h-[42px] rounded-[6px] border border-[var(--mf-field-border)] bg-[var(--mf-field-bg)] px-3 text-[13px] text-[var(--mf-field-text)] focus-visible:border-[var(--mf-field-focus)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--mf-field-focus-ring)]"
                 value={draftAttachmentSettings.storageMode}
                 onChange={(event) =>
                   setDraftAttachmentSettings((prev) => ({
@@ -3085,12 +3150,12 @@ function App() {
             </div>
 
             <div className="grid gap-[6px]">
-              <Label htmlFor="sidebar-attachment-link-format" className="text-[12px] font-medium text-[#6B7280]">
+              <Label htmlFor="sidebar-attachment-link-format" className="text-[12px] font-medium text-[var(--mf-muted)]">
                 附件链接格式
               </Label>
               <select
                 id="sidebar-attachment-link-format"
-                className="h-[42px] rounded-[6px] border border-[#D1D5DB] bg-[#FFFFFF] px-3 text-[13px] text-[#111827] focus-visible:border-[#3B82F6] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3B82F633]"
+                className="h-[42px] rounded-[6px] border border-[var(--mf-field-border)] bg-[var(--mf-field-bg)] px-3 text-[13px] text-[var(--mf-field-text)] focus-visible:border-[var(--mf-field-focus)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--mf-field-focus-ring)]"
                 value={draftAttachmentSettings.linkFormat}
                 onChange={(event) =>
                   setDraftAttachmentSettings((prev) => ({
@@ -3106,13 +3171,13 @@ function App() {
             </div>
 
             <div className="grid gap-[6px]">
-              <Label htmlFor="sidebar-attachment-folder-name" className="text-[12px] font-medium text-[#6B7280]">
+              <Label htmlFor="sidebar-attachment-folder-name" className="text-[12px] font-medium text-[var(--mf-muted)]">
                 附件目录名
               </Label>
               <Input
                 id="sidebar-attachment-folder-name"
                 placeholder="_assets"
-                className="h-[42px] rounded-[6px] border-[#D1D5DB] bg-[#FFFFFF] px-3 text-[13px] text-[#111827] placeholder:text-[#9CA3AF] focus-visible:border-[#3B82F6] focus-visible:ring-[#3B82F633]"
+                className="h-[42px] rounded-[6px] border-[var(--mf-field-border)] bg-[var(--mf-field-bg)] px-3 text-[13px] text-[var(--mf-field-text)] placeholder:text-[var(--mf-field-placeholder)] focus-visible:border-[var(--mf-field-focus)] focus-visible:ring-[var(--mf-field-focus-ring)]"
                 value={draftAttachmentSettings.folderName}
                 onChange={(event) =>
                   setDraftAttachmentSettings((prev) => ({
@@ -3124,7 +3189,7 @@ function App() {
             </div>
 
             <div className="grid gap-[6px]">
-              <Label htmlFor="sidebar-attachment-max-size" className="text-[12px] font-medium text-[#6B7280]">
+              <Label htmlFor="sidebar-attachment-max-size" className="text-[12px] font-medium text-[var(--mf-muted)]">
                 附件大小上限（MB）
               </Label>
               <Input
@@ -3132,7 +3197,7 @@ function App() {
                 type="number"
                 min={1}
                 max={1024}
-                className="h-[42px] rounded-[6px] border-[#D1D5DB] bg-[#FFFFFF] px-3 text-[13px] text-[#111827] placeholder:text-[#9CA3AF] focus-visible:border-[#3B82F6] focus-visible:ring-[#3B82F633]"
+                className="h-[42px] rounded-[6px] border-[var(--mf-field-border)] bg-[var(--mf-field-bg)] px-3 text-[13px] text-[var(--mf-field-text)] placeholder:text-[var(--mf-field-placeholder)] focus-visible:border-[var(--mf-field-focus)] focus-visible:ring-[var(--mf-field-focus-ring)]"
                 value={draftAttachmentSettings.maxSizeMB}
                 onChange={(event) =>
                   setDraftAttachmentSettings((prev) => ({
@@ -3144,14 +3209,14 @@ function App() {
             </div>
           </div>
 
-          <p className="mt-4 text-[12px] text-[#9A3412]">
+          <p className="mt-4 text-[12px] text-[var(--mf-warning-strong)]">
             可清理当前附件目录下未被任何 Markdown 引用的附件文件。
           </p>
 
           <div className="mt-3 flex items-center justify-between gap-2">
             <Button
               variant="outline"
-              className="border-[#FECACA] text-[#B91C1C] hover:bg-[#FEF2F2]"
+              className="border-[var(--mf-danger-soft-border)] text-[var(--mf-danger-strong)] hover:bg-[var(--mf-danger-surface)]"
               onClick={() => {
                 void onCleanupUnusedAttachments()
               }}
@@ -3163,7 +3228,12 @@ function App() {
               <Button variant="outline" onClick={() => setAttachmentDialogOpen(false)}>
                 取消
               </Button>
-              <Button onClick={onSaveAttachmentSettings}>保存</Button>
+              <Button
+                className="border border-[var(--mf-feedback-soft-border)] bg-[var(--mf-feedback)] text-[var(--mf-feedback-contrast)] hover:bg-[var(--mf-feedback-strong)]"
+                onClick={onSaveAttachmentSettings}
+              >
+                保存
+              </Button>
             </div>
           </div>
         </DialogContent>
@@ -3177,21 +3247,21 @@ function App() {
           }
         }}
       >
-        <DialogContent className="h-[min(78vh,640px)] w-[calc(100vw-24px)] max-w-[760px] overflow-hidden rounded-[16px] border-[#E5E7EB] bg-[#FFFFFF] p-0">
+        <DialogContent className="h-[min(78vh,640px)] w-[calc(100vw-24px)] max-w-[760px] overflow-hidden rounded-[16px] border-[var(--mf-panel-border)] bg-[var(--mf-panel-bg)] p-0">
           <DialogTitle className="sr-only">文件预览</DialogTitle>
           <DialogDescription className="sr-only">预览文本、图片、视频、音频和 PDF 文件。</DialogDescription>
 
           {previewDialog ? (
             <div className="flex h-full flex-col">
-              <div className="flex items-center gap-3 border-b border-[#E5E7EB] px-4 py-3 pr-14">
+              <div className="flex items-center gap-3 border-b border-[var(--mf-panel-border)] px-4 py-3 pr-14">
                 <div className="min-w-0 flex-1">
                   <div className="flex min-w-0 items-center gap-2">
-                    <p className="truncate text-sm font-semibold text-[#111827]">{previewDialog.file.name}</p>
-                    <span className="shrink-0 rounded-full bg-[#EFF6FF] px-2 py-1 text-[11px] font-medium text-[#1D4ED8]">
+                    <p className="truncate text-sm font-semibold text-[var(--mf-field-text)]">{previewDialog.file.name}</p>
+                    <span className="shrink-0 rounded-full bg-[var(--mf-brand-soft)] px-2 py-1 text-[11px] font-medium text-[var(--mf-brand-deep)]">
                       {previewTypeLabel}
                     </span>
                   </div>
-                  <p className="truncate text-xs text-[#6B7280]">{previewDialog.file.path}</p>
+                  <p className="truncate text-xs text-[var(--mf-muted)]">{previewDialog.file.path}</p>
                 </div>
                 <Button
                   variant="outline"
@@ -3208,20 +3278,20 @@ function App() {
                 </Button>
               </div>
 
-              <div className="min-h-0 flex-1 overflow-auto bg-[#F8FAFC] p-4">
+              <div className="min-h-0 flex-1 overflow-auto bg-[var(--mf-panel-soft)] p-4">
                 {previewDialog.loading ? (
-                  <div className="flex h-full min-h-[220px] items-center justify-center gap-2 text-sm text-[#64748B]">
+                  <div className="flex h-full min-h-[220px] items-center justify-center gap-2 text-sm text-[var(--mf-muted-soft)]">
                     <RefreshCw className="h-4 w-4 animate-spin" />
                     <span>加载预览中...</span>
                   </div>
                 ) : previewDialog.error ? (
                   <div className="flex h-full min-h-[220px] items-center justify-center">
-                    <p className="rounded-[8px] border border-[#FECACA] bg-[#FEF2F2] px-3 py-2 text-sm text-[#B91C1C]">
+                    <p className="rounded-[8px] border border-[var(--mf-danger-soft-border)] bg-[var(--mf-danger-surface)] px-3 py-2 text-sm text-[var(--mf-danger-strong)]">
                       预览失败：{previewDialog.error}
                     </p>
                   </div>
                 ) : previewDialog.kind === 'text' ? (
-                  <pre className="h-full min-h-[220px] whitespace-pre-wrap break-words rounded-[8px] border border-[#E2E8F0] bg-[#FFFFFF] p-4 font-mono text-[13px] leading-6 text-[#111827]">
+                  <pre className="h-full min-h-[220px] whitespace-pre-wrap break-words rounded-[8px] border border-[var(--mf-preview-border)] bg-[var(--mf-panel-bg)] p-4 font-mono text-[13px] leading-6 text-[var(--mf-field-text)]">
                     {previewDialog.textContent || '（空文本文件）'}
                   </pre>
                 ) : previewDialog.kind === 'image' ? (
@@ -3229,7 +3299,7 @@ function App() {
                     <img
                       src={previewDialog.objectUrl}
                       alt={previewDialog.file.name}
-                      className="max-h-full max-w-full rounded-[8px] border border-[#E2E8F0] bg-[#FFFFFF] object-contain shadow-sm"
+                      className="max-h-full max-w-full rounded-[8px] border border-[var(--mf-preview-border)] bg-[var(--mf-panel-bg)] object-contain shadow-sm"
                     />
                   </div>
                 ) : previewDialog.kind === 'audio' ? (
@@ -3239,12 +3309,16 @@ function App() {
                 ) : previewDialog.kind === 'pdf' ? (
                   <iframe
                     src={previewDialog.objectUrl}
-                    className="h-full min-h-[220px] w-full rounded-[8px] border border-[#E2E8F0] bg-[#FFFFFF]"
+                    className="h-full min-h-[220px] w-full rounded-[8px] border border-[var(--mf-preview-border)] bg-[var(--mf-panel-bg)]"
                     title={previewDialog.file.name}
                   />
                 ) : (
                   <div className="h-full min-h-[220px]">
-                    <video src={previewDialog.objectUrl} controls className="h-full w-full rounded-[8px] border border-[#E2E8F0] bg-black" />
+                    <video
+                      src={previewDialog.objectUrl}
+                      controls
+                      className="h-full w-full rounded-[8px] border border-[var(--mf-preview-border)] bg-[var(--mf-preview-video-bg)]"
+                    />
                   </div>
                 )}
               </div>
