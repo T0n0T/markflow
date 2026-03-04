@@ -10,7 +10,7 @@ import {
   useState,
 } from 'react'
 import { Crepe } from '@milkdown/crepe'
-import { commandsCtx } from '@milkdown/kit/core'
+import { commandsCtx, editorViewCtx } from '@milkdown/kit/core'
 import { redoCommand, undoCommand } from '@milkdown/kit/plugin/history'
 import {
   addBlockTypeCommand,
@@ -171,6 +171,13 @@ type UploadAttachmentResult = {
 type WysiwygEditorApi = {
   applyToolbarAction: (action: ToolbarAction) => boolean
   insertMarkdown: (snippet: string) => boolean
+  copy: () => boolean
+  cut: () => boolean
+  findImagePosFromTarget: (target: EventTarget | null) => number | null
+  pasteWithFormatting: () => boolean
+  resizeImageByPos: (pos: number, ratio: number) => boolean
+  selectAll: () => boolean
+  insertPlainText: (text: string) => boolean
 }
 
 type ContextKind = 'file' | 'directory' | 'root'
@@ -182,11 +189,40 @@ type ContextMenuState = {
   y: number
 }
 
+type SourceImageTarget = {
+  end: number
+  start: number
+}
+
+type EditorImageTarget =
+  | {
+      kind: 'source'
+      target: SourceImageTarget
+    }
+  | {
+      kind: 'wysiwyg'
+      target: {
+        pos: number
+      }
+    }
+
+type EditorContextMenuState = {
+  imageTarget: EditorImageTarget | null
+  mode: EditorMode
+  x: number
+  y: number
+}
+
 const CONFIG_KEY = 'markflow.webdav.config'
 const DEFAULT_ROOT_PATH = '/'
 const DEFAULT_MARKDOWN = '# 会议记录\n\n- WebDAV 已连接\n\n- 今日目标：编辑 markdown 文件并同步到云端\n'
 const MENU_WIDTH = 220
 const MENU_HEIGHT = 250
+const EDITOR_MENU_WIDTH = 240
+const EDITOR_MENU_BASE_HEIGHT = 258
+const EDITOR_MENU_WITH_IMAGE_HEIGHT = 442
+const IMAGE_RESIZE_PRESETS = [25, 50, 75, 100]
+const SOURCE_MARKDOWN_IMAGE_PATTERN = /!\[[^\]]*]\(([^)\n]+)\)/g
 const THEME_PREFERENCE_ORDER: ThemePreference[] = ['system', 'light', 'dark']
 const THEME_PREFERENCE_LABEL: Record<ThemePreference, string> = {
   dark: '深色',
@@ -456,6 +492,56 @@ function getNextThemePreference(preference: ThemePreference): ThemePreference {
     return THEME_PREFERENCE_ORDER[0]
   }
   return THEME_PREFERENCE_ORDER[(currentIndex + 1) % THEME_PREFERENCE_ORDER.length]
+}
+
+function getContextMenuPosition(x: number, y: number, width: number, height: number) {
+  const viewportWidth = typeof window === 'undefined' ? x : window.innerWidth
+  const viewportHeight = typeof window === 'undefined' ? y : window.innerHeight
+
+  return {
+    left: Math.max(10, Math.min(x + 6, viewportWidth - width - 10)),
+    top: Math.max(10, Math.min(y + 6, viewportHeight - height - 10)),
+  }
+}
+
+function findMarkdownImageTargetAtOffset(markdown: string, offset: number): SourceImageTarget | null {
+  const matcher = new RegExp(SOURCE_MARKDOWN_IMAGE_PATTERN.source, SOURCE_MARKDOWN_IMAGE_PATTERN.flags)
+
+  for (const match of markdown.matchAll(matcher)) {
+    const snippet = match[0]
+    if (!snippet || typeof match.index !== 'number') {
+      continue
+    }
+
+    const start = match.index
+    const end = start + snippet.length
+    if (offset >= start && offset <= end) {
+      return { end, start }
+    }
+  }
+
+  return null
+}
+
+function applyMarkdownImageRatio(markdown: string, target: SourceImageTarget, ratio: number) {
+  const prefix = markdown.slice(0, target.start)
+  const snippet = markdown.slice(target.start, target.end)
+  const suffix = markdown.slice(target.end)
+  const ratioLabel = Number.parseFloat(ratio.toFixed(2)).toString()
+  const nextSnippet = snippet.replace(/^!\[[^\]]*]\(/, `![${ratioLabel}](`)
+
+  if (nextSnippet === snippet) {
+    return markdown
+  }
+
+  return `${prefix}${nextSnippet}${suffix}`
+}
+
+function getPasteShortcutLabel() {
+  if (typeof navigator === 'undefined') {
+    return 'Ctrl+V'
+  }
+  return navigator.platform.toLowerCase().includes('mac') ? '⌘+V' : 'Ctrl+V'
 }
 
 function extractMarkdownLinkTargets(markdown: string) {
@@ -883,6 +969,7 @@ type WysiwygMarkdownEditorProps = {
   markdown: string
   onApiChange: (api: WysiwygEditorApi | null) => void
   onChange: (nextValue: string) => void
+  onContextMenu: (event: ReactMouseEvent<HTMLDivElement>) => void
   onImageUpload: (file: File) => Promise<string>
   onPasteCapture: (event: ReactClipboardEvent<HTMLDivElement>) => void
   resolveImageSrc: (url: string) => Promise<string> | string
@@ -894,6 +981,7 @@ function WysiwygMarkdownEditor({
   markdown,
   onApiChange,
   onChange,
+  onContextMenu,
   onImageUpload,
   onPasteCapture,
   resolveImageSrc,
@@ -1066,19 +1154,115 @@ function WysiwygMarkdownEditor({
     return true
   }, [])
 
+  const runDocumentCommand = useCallback((command: 'copy' | 'cut' | 'paste' | 'selectAll') => {
+    const crepe = crepeRef.current
+    if (!crepe) {
+      return false
+    }
+
+    return crepe.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      view.focus()
+      return document.execCommand(command)
+    })
+  }, [])
+
+  const findImagePosFromTarget = useCallback((target: EventTarget | null) => {
+    if (!(target instanceof Element)) {
+      return null
+    }
+
+    const imageRoot = target.closest('.milkdown-image-block')
+    if (!imageRoot) {
+      return null
+    }
+
+    const crepe = crepeRef.current
+    if (!crepe) {
+      return null
+    }
+
+    return crepe.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      try {
+        const domPosition = view.posAtDOM(imageRoot, 0)
+        const candidatePositions = [domPosition, domPosition - 1, domPosition + 1]
+
+        for (const position of candidatePositions) {
+          if (position < 0 || position > view.state.doc.content.size) {
+            continue
+          }
+          const node = view.state.doc.nodeAt(position)
+          if (node?.type.name === 'image-block') {
+            return position
+          }
+        }
+      } catch {
+        return null
+      }
+
+      return null
+    })
+  }, [])
+
+  const resizeImageByPos = useCallback((pos: number, ratio: number) => {
+    const crepe = crepeRef.current
+    if (!crepe || ratio <= 0) {
+      return false
+    }
+
+    return crepe.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      const node = view.state.doc.nodeAt(pos)
+      if (!node || node.type.name !== 'image-block') {
+        return false
+      }
+      const nextRatio = Number.parseFloat(ratio.toFixed(2))
+      view.dispatch(view.state.tr.setNodeAttribute(pos, 'ratio', nextRatio))
+      view.focus()
+      return true
+    })
+  }, [])
+
+  const insertPlainText = useCallback((text: string) => {
+    const crepe = crepeRef.current
+    if (!crepe) {
+      return false
+    }
+
+    return crepe.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      const { from, to } = view.state.selection
+      view.dispatch(view.state.tr.insertText(text, from, to))
+      view.focus()
+      return true
+    })
+  }, [])
+
   useEffect(() => {
     onApiChange({
       applyToolbarAction,
+      copy: () => runDocumentCommand('copy'),
+      cut: () => runDocumentCommand('cut'),
+      findImagePosFromTarget,
       insertMarkdown: insertMarkdownSnippet,
+      insertPlainText,
+      pasteWithFormatting: () => runDocumentCommand('paste'),
+      resizeImageByPos,
+      selectAll: () => runDocumentCommand('selectAll'),
     })
 
     return () => {
       onApiChange(null)
     }
-  }, [applyToolbarAction, insertMarkdownSnippet, onApiChange])
+  }, [applyToolbarAction, findImagePosFromTarget, insertMarkdownSnippet, insertPlainText, onApiChange, resizeImageByPos, runDocumentCommand])
 
   return (
-    <div className={`crepe-editor-shell h-full ${editable ? '' : 'crepe-editor-readonly'}`} onPasteCapture={onPasteCapture}>
+    <div
+      className={`crepe-editor-shell h-full ${editable ? '' : 'crepe-editor-readonly'}`}
+      onContextMenu={onContextMenu}
+      onPasteCapture={onPasteCapture}
+    >
       <Milkdown />
     </div>
   )
@@ -1112,6 +1296,7 @@ function App() {
   const [editorMode, setEditorMode] = useState<EditorMode>('wysiwyg')
   const [wysiwygSyncVersion, setWysiwygSyncVersion] = useState(0)
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
+  const [editorContextMenu, setEditorContextMenu] = useState<EditorContextMenuState | null>(null)
   const [themePreference, setThemePreferenceState] = useState<ThemePreference>(() => readThemePreference())
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => resolveTheme(readThemePreference()))
 
@@ -1551,14 +1736,18 @@ function App() {
   )
 
   useEffect(() => {
-    if (!contextMenu) {
+    if (!contextMenu && !editorContextMenu) {
       return
     }
 
-    const close = () => setContextMenu(null)
+    const close = () => {
+      setContextMenu(null)
+      setEditorContextMenu(null)
+    }
     const closeByEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setContextMenu(null)
+        setEditorContextMenu(null)
       }
     }
 
@@ -1573,7 +1762,7 @@ function App() {
       window.removeEventListener('scroll', close, true)
       window.removeEventListener('keydown', closeByEscape)
     }
-  }, [contextMenu])
+  }, [contextMenu, editorContextMenu])
 
   const onSelectFile = useCallback(
     async (filePath: string) => {
@@ -2305,6 +2494,73 @@ function App() {
     [canUseEditorActions, editorMode, insertAroundSelection, insertBlock, insertLinePrefix, onRedo, onUndo],
   )
 
+  const runSourceEditorCommand = useCallback((command: 'copy' | 'cut' | 'paste' | 'selectAll') => {
+    const textarea = sourceEditorRef.current
+    if (!textarea) {
+      return false
+    }
+    textarea.focus()
+    return document.execCommand(command)
+  }, [])
+
+  const openEditorContextMenu = useCallback(
+    (event: ReactMouseEvent<HTMLElement>, mode: EditorMode) => {
+      event.preventDefault()
+      event.stopPropagation()
+
+      if (!canEditDocument) {
+        return
+      }
+
+      let imageTarget: EditorImageTarget | null = null
+      if (mode === 'source') {
+        const textarea = sourceEditorRef.current
+        if (textarea) {
+          textarea.focus()
+          const offset = Math.min(textarea.selectionStart, textarea.selectionEnd)
+          const target = findMarkdownImageTargetAtOffset(textarea.value, offset)
+          if (target) {
+            imageTarget = {
+              kind: 'source',
+              target,
+            }
+          }
+        }
+      } else {
+        const pos = wysiwygApiRef.current?.findImagePosFromTarget(event.target) ?? null
+        if (typeof pos === 'number') {
+          imageTarget = {
+            kind: 'wysiwyg',
+            target: { pos },
+          }
+        }
+      }
+
+      setContextMenu(null)
+      setEditorContextMenu({
+        imageTarget,
+        mode,
+        x: event.clientX,
+        y: event.clientY,
+      })
+    },
+    [canEditDocument],
+  )
+
+  const onSourceEditorContextMenu = useCallback(
+    (event: ReactMouseEvent<HTMLTextAreaElement>) => {
+      openEditorContextMenu(event as ReactMouseEvent<HTMLElement>, 'source')
+    },
+    [openEditorContextMenu],
+  )
+
+  const onWysiwygEditorContextMenu = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      openEditorContextMenu(event as ReactMouseEvent<HTMLElement>, 'wysiwyg')
+    },
+    [openEditorContextMenu],
+  )
+
   const openContextMenu = useCallback(
     (event: ReactMouseEvent, path: string, kind: ContextKind) => {
       event.preventDefault()
@@ -2314,6 +2570,7 @@ function App() {
         return
       }
 
+      setEditorContextMenu(null)
       setContextMenu({
         kind,
         path: normalizeDavPath(path),
@@ -2324,18 +2581,162 @@ function App() {
     [isConnected],
   )
 
+  const onCopyFromEditor = useCallback(() => {
+    const mode = editorContextMenu?.mode ?? editorMode
+    if (mode === 'source') {
+      runSourceEditorCommand('copy')
+    } else {
+      wysiwygApiRef.current?.copy()
+    }
+    setEditorContextMenu(null)
+  }, [editorContextMenu?.mode, editorMode, runSourceEditorCommand])
+
+  const onCutFromEditor = useCallback(() => {
+    if (!canUseEditorActions) {
+      return
+    }
+
+    const mode = editorContextMenu?.mode ?? editorMode
+    if (mode === 'source') {
+      runSourceEditorCommand('cut')
+    } else {
+      wysiwygApiRef.current?.cut()
+    }
+    setEditorContextMenu(null)
+  }, [canUseEditorActions, editorContextMenu?.mode, editorMode, runSourceEditorCommand])
+
+  const onPasteWithFormattingInEditor = useCallback(() => {
+    if (!canUseEditorActions) {
+      return
+    }
+
+    const mode = editorContextMenu?.mode ?? editorMode
+    const allowed = mode === 'source' ? runSourceEditorCommand('paste') : (wysiwygApiRef.current?.pasteWithFormatting() ?? false)
+    if (!allowed) {
+      toast.info(`浏览器阻止了“保留格式粘贴”，请使用 ${getPasteShortcutLabel()}`)
+    }
+    setEditorContextMenu(null)
+  }, [canUseEditorActions, editorContextMenu?.mode, editorMode, runSourceEditorCommand])
+
+  const onPastePlainTextInEditor = useCallback(async () => {
+    if (!canUseEditorActions) {
+      return
+    }
+
+    if (!navigator.clipboard?.readText) {
+      toast.info('当前浏览器不支持读取剪贴板文本，请手动使用粘贴快捷键。')
+      setEditorContextMenu(null)
+      return
+    }
+
+    try {
+      const text = await navigator.clipboard.readText()
+      const mode = editorContextMenu?.mode ?? editorMode
+      if (mode === 'source') {
+        const textarea = sourceEditorRef.current
+        if (!textarea) {
+          setEditorContextMenu(null)
+          return
+        }
+
+        const { selectionEnd, selectionStart, value } = textarea
+        const nextValue = `${value.slice(0, selectionStart)}${text}${value.slice(selectionEnd)}`
+        setContentWithHistory(nextValue)
+        requestAnimationFrame(() => {
+          textarea.focus()
+          const cursor = selectionStart + text.length
+          textarea.setSelectionRange(cursor, cursor)
+        })
+      } else {
+        wysiwygApiRef.current?.insertPlainText(text)
+      }
+    } catch {
+      toast.info('读取剪贴板失败，请确认浏览器已授权后重试。')
+    } finally {
+      setEditorContextMenu(null)
+    }
+  }, [canUseEditorActions, editorContextMenu?.mode, editorMode, setContentWithHistory])
+
+  const onSelectAllInEditor = useCallback(() => {
+    const mode = editorContextMenu?.mode ?? editorMode
+    if (mode === 'source') {
+      runSourceEditorCommand('selectAll')
+    } else {
+      wysiwygApiRef.current?.selectAll()
+    }
+    setEditorContextMenu(null)
+  }, [editorContextMenu?.mode, editorMode, runSourceEditorCommand])
+
+  const applyEditorImageRatio = useCallback(
+    (percent: number) => {
+      if (!canUseEditorActions || !editorContextMenu?.imageTarget) {
+        return
+      }
+
+      const ratio = percent / 100
+      if (!Number.isFinite(ratio) || ratio <= 0) {
+        toast.error('请输入大于 0 的缩放百分比')
+        return
+      }
+
+      const imageTarget = editorContextMenu.imageTarget
+      if (imageTarget.kind === 'source') {
+        const current = sourceEditorRef.current?.value ?? contentRef.current
+        const next = applyMarkdownImageRatio(current, imageTarget.target, ratio)
+        if (next === current) {
+          toast.error('未找到可调整的图片语法')
+          setEditorContextMenu(null)
+          return
+        }
+        setContentWithHistory(next)
+        requestAnimationFrame(() => sourceEditorRef.current?.focus())
+      } else {
+        const ok = wysiwygApiRef.current?.resizeImageByPos(imageTarget.target.pos, ratio) ?? false
+        if (!ok) {
+          toast.error('未找到可调整的图片')
+          setEditorContextMenu(null)
+          return
+        }
+      }
+
+      setEditorContextMenu(null)
+      toast.success(`图片缩放已设置为 ${percent}%`)
+    },
+    [canUseEditorActions, editorContextMenu, setContentWithHistory],
+  )
+
+  const onApplyCustomImageRatio = useCallback(() => {
+    if (!editorContextMenu?.imageTarget || !canUseEditorActions) {
+      return
+    }
+    const input = window.prompt('输入缩放百分比（仅支持数字，如 75）', '100')
+    if (input === null) {
+      return
+    }
+    const percent = Number(input.trim())
+    if (!Number.isFinite(percent) || percent <= 0) {
+      toast.error('请输入大于 0 的数字')
+      return
+    }
+    applyEditorImageRatio(percent)
+  }, [applyEditorImageRatio, canUseEditorActions, editorContextMenu?.imageTarget])
+
   const contextPosition = useMemo(() => {
     if (!contextMenu) {
       return null
     }
-    const viewportWidth = typeof window === 'undefined' ? contextMenu.x : window.innerWidth
-    const viewportHeight = typeof window === 'undefined' ? contextMenu.y : window.innerHeight
 
-    return {
-      left: Math.max(10, Math.min(contextMenu.x + 6, viewportWidth - MENU_WIDTH - 10)),
-      top: Math.max(10, Math.min(contextMenu.y + 6, viewportHeight - MENU_HEIGHT - 10)),
-    }
+    return getContextMenuPosition(contextMenu.x, contextMenu.y, MENU_WIDTH, MENU_HEIGHT)
   }, [contextMenu])
+
+  const editorContextPosition = useMemo(() => {
+    if (!editorContextMenu) {
+      return null
+    }
+
+    const menuHeight = editorContextMenu.imageTarget ? EDITOR_MENU_WITH_IMAGE_HEIGHT : EDITOR_MENU_BASE_HEIGHT
+    return getContextMenuPosition(editorContextMenu.x, editorContextMenu.y, EDITOR_MENU_WIDTH, menuHeight)
+  }, [editorContextMenu])
 
   const createMarkdownFile = useCallback(
     async (targetDirectory: string) => {
@@ -2608,6 +3009,10 @@ function App() {
   const previewTypeLabel = previewDialog ? getPreviewTypeLabel(previewDialog.kind) : ''
   const canDownloadPreview = Boolean(previewDialog) && !previewDialog?.loading && !previewDialog?.error
   const toolbarDisabled = !canUseEditorActions
+  const hasEditorImageTarget = Boolean(editorContextMenu?.imageTarget)
+  const editorMenuActionClass = 'w-full rounded-[6px] px-3 py-2 text-left text-sm text-[var(--mf-muted-strong)] hover:bg-[var(--mf-surface-muted)]'
+  const editorMenuActionDisabledClass =
+    'w-full cursor-not-allowed rounded-[6px] px-3 py-2 text-left text-sm text-[var(--mf-muted-soft)] opacity-70'
 
   return (
     <div className="h-full w-full bg-[var(--mf-bg)] text-[var(--mf-text)]">
@@ -3089,6 +3494,7 @@ function App() {
                     value={content}
                     readOnly={!canUseEditorActions}
                     onChange={(event) => setContentWithHistory(event.target.value)}
+                    onContextMenu={onSourceEditorContextMenu}
                     onPasteCapture={onSourcePasteCapture}
                     placeholder="开始书写 Markdown..."
                   />
@@ -3101,6 +3507,7 @@ function App() {
                     }}
                     syncVersion={wysiwygSyncVersion}
                     onChange={(nextValue) => setContentWithHistory(nextValue)}
+                    onContextMenu={onWysiwygEditorContextMenu}
                     onImageUpload={onWysiwygImageUpload}
                     onPasteCapture={onWysiwygPasteCapture}
                     resolveImageSrc={resolveImageSrc}
@@ -3326,6 +3733,68 @@ function App() {
           ) : null}
         </DialogContent>
       </Dialog>
+
+      {editorContextMenu && editorContextPosition ? (
+        <div
+          className="fixed z-[110] min-w-[240px] rounded-[var(--mf-radius-md)] border border-[var(--mf-border)] bg-[var(--mf-surface)] p-1 shadow-[var(--mf-shadow-menu)]"
+          style={{ left: editorContextPosition.left, top: editorContextPosition.top }}
+          role="menu"
+        >
+          <button
+            className={canUseEditorActions ? editorMenuActionClass : editorMenuActionDisabledClass}
+            onClick={onCutFromEditor}
+            disabled={!canUseEditorActions}
+          >
+            剪切
+          </button>
+          <button className={editorMenuActionClass} onClick={onCopyFromEditor}>
+            复制
+          </button>
+          <button
+            className={canUseEditorActions ? editorMenuActionClass : editorMenuActionDisabledClass}
+            onClick={onPasteWithFormattingInEditor}
+            disabled={!canUseEditorActions}
+          >
+            保留格式粘贴
+          </button>
+          <button
+            className={canUseEditorActions ? editorMenuActionClass : editorMenuActionDisabledClass}
+            onClick={() => {
+              void onPastePlainTextInEditor()
+            }}
+            disabled={!canUseEditorActions}
+          >
+            仅粘贴文本
+          </button>
+          <button className={editorMenuActionClass} onClick={onSelectAllInEditor}>
+            全选
+          </button>
+
+          {hasEditorImageTarget ? (
+            <>
+              <div className="my-1 h-px bg-[var(--mf-border)]" />
+              <p className="px-3 py-1 text-[11px] font-medium tracking-wide text-[var(--mf-muted-soft)]">图片缩放</p>
+              {IMAGE_RESIZE_PRESETS.map((percent) => (
+                <button
+                  key={`resize-${percent}`}
+                  className={canUseEditorActions ? editorMenuActionClass : editorMenuActionDisabledClass}
+                  onClick={() => applyEditorImageRatio(percent)}
+                  disabled={!canUseEditorActions}
+                >
+                  缩放到 {percent}%
+                </button>
+              ))}
+              <button
+                className={canUseEditorActions ? editorMenuActionClass : editorMenuActionDisabledClass}
+                onClick={onApplyCustomImageRatio}
+                disabled={!canUseEditorActions}
+              >
+                自定义百分比...
+              </button>
+            </>
+          ) : null}
+        </div>
+      ) : null}
 
       {contextMenu && contextPosition ? (
         <div
