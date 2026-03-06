@@ -465,6 +465,31 @@ function App() {
     [activeFilePath, closePreviewDialog, listRemote, previewDialog, readFile, setContentWithHistory],
   )
 
+  const refreshRemoteFileTree = useCallback(
+    async (targetClient: WebDAVClient, targetConfig: DavConfig) => {
+      const snapshot = await listRemote(targetClient, targetConfig)
+      setFiles(snapshot.files)
+      setDirectories(snapshot.directories)
+
+      if (previewDialog && !snapshot.files.some((item) => item.path === previewDialog.file.path)) {
+        closePreviewDialog()
+      }
+    },
+    [closePreviewDialog, listRemote, previewDialog],
+  )
+
+  const refreshRemoteFileTreeAfterAttachmentUpload = useCallback(async () => {
+    if (!client || !config) {
+      return
+    }
+
+    try {
+      await refreshRemoteFileTree(client, config)
+    } catch {
+      // Keep upload success flow unaffected when tree refresh fails.
+    }
+  }, [client, config, refreshRemoteFileTree])
+
   const connectWebdav = useCallback(
     async (inputConfig: DavConfig, options?: { persist?: boolean }) => {
       const nextConfig = {
@@ -792,19 +817,21 @@ function App() {
         const snippet = buildAttachmentMarkdown(file, result.link)
         insertMarkdownSnippet(snippet)
         toast.success(`附件已上传：${file.name}`)
+        await refreshRemoteFileTreeAfterAttachmentUpload()
       } catch {
         // Errors are already handled in uploadAttachmentFile.
       }
     },
-    [insertMarkdownSnippet, uploadAttachmentFile],
+    [insertMarkdownSnippet, refreshRemoteFileTreeAfterAttachmentUpload, uploadAttachmentFile],
   )
 
   const onWysiwygImageUpload = useCallback(
     async (file: File) => {
       const result = await uploadAttachmentFile(file)
+      await refreshRemoteFileTreeAfterAttachmentUpload()
       return result.link
     },
-    [uploadAttachmentFile],
+    [refreshRemoteFileTreeAfterAttachmentUpload, uploadAttachmentFile],
   )
 
   const uploadPastedImagesToDav = useCallback(
@@ -839,14 +866,15 @@ function App() {
         insertMarkdownSnippet(snippets.join('\n'))
         if (uploadedNames.length === 1) {
           toast.success(`截图已上传：${uploadedNames[0]}`)
-          return
+        } else {
+          toast.success(`截图已上传：${uploadedNames.length} 张`)
         }
-        toast.success(`截图已上传：${uploadedNames.length} 张`)
+        await refreshRemoteFileTreeAfterAttachmentUpload()
       })()
 
       return true
     },
-    [canUseEditorActions, insertMarkdownSnippet, isUploadingAttachment, uploadAttachmentFile],
+    [canUseEditorActions, insertMarkdownSnippet, isUploadingAttachment, refreshRemoteFileTreeAfterAttachmentUpload, uploadAttachmentFile],
   )
 
   const onSourcePasteCapture = useCallback(

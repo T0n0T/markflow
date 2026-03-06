@@ -767,6 +767,104 @@ export function normalizePastedImageFile(file: File, index: number) {
   }
 }
 
+function parseDataUrlImage(dataUrl: string) {
+  const trimmed = dataUrl.trim()
+  const match = /^data:(image\/[a-z0-9.+-]+);base64,([\s\S]+)$/i.exec(trimmed)
+  if (!match) {
+    return null
+  }
+
+  const mimeType = match[1].toLowerCase()
+  const encoded = match[2].replace(/\s+/g, '')
+  if (!encoded) {
+    return null
+  }
+
+  try {
+    const binary = atob(encoded)
+    const bytes = new Uint8Array(binary.length)
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index)
+    }
+    return { bytes, mimeType }
+  } catch {
+    return null
+  }
+}
+
+function collectImageDataUrlsFromString(input: string) {
+  if (!input) {
+    return [] as string[]
+  }
+
+  const found: string[] = []
+  const seen = new Set<string>()
+  const pushDataUrl = (candidate: string) => {
+    const normalized = candidate.trim()
+    if (!normalized || seen.has(normalized)) {
+      return
+    }
+    seen.add(normalized)
+    found.push(normalized)
+  }
+
+  if (typeof DOMParser !== 'undefined' && /<[^>]+>/.test(input)) {
+    try {
+      const doc = new DOMParser().parseFromString(input, 'text/html')
+      for (const image of Array.from(doc.querySelectorAll('img'))) {
+        const src = image.getAttribute('src')?.trim() ?? ''
+        if (src.toLowerCase().startsWith('data:image/')) {
+          pushDataUrl(src)
+        }
+      }
+    } catch {
+      // Ignore parser failures and fallback to regex extraction.
+    }
+  }
+
+  const dataUrlPattern = /data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+/gi
+  let result: RegExpExecArray | null = dataUrlPattern.exec(input)
+  while (result) {
+    pushDataUrl(result[0])
+    result = dataUrlPattern.exec(input)
+  }
+
+  return found
+}
+
+function getClipboardDataUrlImageFiles(clipboardData: DataTransfer) {
+  const rawHtml = clipboardData.getData('text/html')
+  const rawText = clipboardData.getData('text/plain')
+  const candidates = [...collectImageDataUrlsFromString(rawHtml), ...collectImageDataUrlsFromString(rawText)]
+  if (!candidates.length) {
+    return [] as File[]
+  }
+
+  const files: File[] = []
+  for (const candidate of candidates) {
+    const parsed = parseDataUrlImage(candidate)
+    if (!parsed) {
+      continue
+    }
+
+    const ext = getImageExtensionFromMimeType(parsed.mimeType)
+    const fileName = `pasted-image-${formatPasteImageTimestamp()}-${files.length + 1}.${ext}`
+
+    try {
+      files.push(
+        new File([parsed.bytes], fileName, {
+          lastModified: Date.now(),
+          type: parsed.mimeType,
+        }),
+      )
+    } catch {
+      continue
+    }
+  }
+
+  return files
+}
+
 export function getClipboardImageFiles(clipboardData: DataTransfer | null) {
   if (!clipboardData) {
     return [] as File[]
@@ -794,7 +892,11 @@ export function getClipboardImageFiles(clipboardData: DataTransfer | null) {
     }
     fromFiles.push(normalizePastedImageFile(file, fromFiles.length))
   }
-  return fromFiles
+  if (fromFiles.length > 0) {
+    return fromFiles
+  }
+
+  return getClipboardDataUrlImageFiles(clipboardData)
 }
 
 export function toBlobPayload(data: unknown): BlobPart | null {
