@@ -10,6 +10,7 @@ import {
 import {
   Bold,
   Calculator,
+  Check,
   Code2,
   Download,
   Eye,
@@ -33,6 +34,7 @@ import {
   Sun,
   Table2,
   Undo2,
+  X,
   Paperclip,
 } from 'lucide-react'
 import { createClient, type WebDAVClient } from 'webdav'
@@ -40,6 +42,7 @@ import { createClient, type WebDAVClient } from 'webdav'
 import { EditorContextMenu } from '@/features/app/components/EditorContextMenu'
 import { FileTreeSidebar } from '@/features/app/components/FileTreeSidebar'
 import { FileTreeContextMenu } from '@/features/app/components/FileTreeContextMenu'
+import { TextPreviewEditor } from '@/features/app/components/TextPreviewEditor'
 import { useAttachmentManager } from '@/features/app/hooks/useAttachmentManager'
 import { useEditorContextMenu } from '@/features/app/hooks/useEditorContextMenu'
 import { useFileTreeContextMenu } from '@/features/app/hooks/useFileTreeContextMenu'
@@ -49,6 +52,7 @@ import {
   DEFAULT_MARKDOWN,
   DEFAULT_ROOT_PATH,
   EMPTY_CONFIG,
+  MARKDOWN_FILE_EXTENSIONS,
   THEME_PREFERENCE_LABEL,
   buildFolderTree,
   downloadBlob,
@@ -56,9 +60,11 @@ import {
   ensureDavBaseUrl,
   getBaseName,
   getClipboardImageFiles,
+  getFileExtension,
   getMimeTypeForFile,
   getNextThemePreference,
   getPreviewTypeLabel,
+  isCreatableTextFileName,
   joinDavPath,
   loadStoredConfig,
   normalizeDavPath,
@@ -79,7 +85,7 @@ import {
   type WysiwygEditorApi,
 } from '@/features/app/shared'
 import {
-  createMarkdownFile as createRemoteMarkdownFile,
+  createTextFile as createRemoteTextFile,
   listRemoteSnapshot,
   readRemoteBinaryFile,
   readRemoteTextFile,
@@ -152,6 +158,8 @@ function App() {
   const warnedAListCreateFallbackRef = useRef(false)
   const previewObjectUrlRef = useRef<string | null>(null)
   const previewRequestRef = useRef(0)
+  const autoConnectAttemptedRef = useRef(false)
+  const connectRequestRef = useRef(0)
 
   const isConnected = client !== null
   const canEditDocument = isConnected && Boolean(activeFilePath)
@@ -316,18 +324,102 @@ function App() {
     previewObjectUrlRef.current = null
   }, [])
 
-  const closePreviewDialog = useCallback(() => {
+  const canClosePreviewDialog = useCallback((state: PreviewDialogState | null) => {
+    if (!state || state.kind !== 'text' || !state.textDirty) {
+      return true
+    }
+    return window.confirm('当前文本文件有未保存修改，确认关闭并丢弃改动吗？')
+  }, [])
+
+  const closePreviewDialog = useCallback((options?: { force?: boolean }) => {
+    if (!options?.force && !canClosePreviewDialog(previewDialog)) {
+      return false
+    }
     previewRequestRef.current += 1
     revokePreviewObjectUrl()
     setPreviewDialog(null)
-  }, [revokePreviewObjectUrl])
+    return true
+  }, [canClosePreviewDialog, previewDialog, revokePreviewObjectUrl])
+
+  const updatePreviewTextDraft = useCallback((nextValue: string) => {
+    setPreviewDialog((current) => {
+      if (!current || current.kind !== 'text') {
+        return current
+      }
+
+      return {
+        ...current,
+        textDirty: nextValue !== current.textContent,
+        textDraft: nextValue,
+      }
+    })
+  }, [])
+
+  const savePreviewTextFile = useCallback(async () => {
+    if (!client || !previewDialog || previewDialog.kind !== 'text' || previewDialog.loading || Boolean(previewDialog.error)) {
+      return false
+    }
+
+    if (previewDialog.textSaving || !previewDialog.textDirty) {
+      return true
+    }
+
+    const targetPath = previewDialog.file.path
+    const nextText = previewDialog.textDraft
+    setPreviewDialog((current) => {
+      if (!current || current.kind !== 'text' || current.file.path !== targetPath) {
+        return current
+      }
+      return {
+        ...current,
+        textSaving: true,
+      }
+    })
+
+    try {
+      await writeRemoteTextFile(client, targetPath, nextText)
+      setPreviewDialog((current) => {
+        if (!current || current.kind !== 'text' || current.file.path !== targetPath) {
+          return current
+        }
+        return {
+          ...current,
+          textContent: nextText,
+          textDirty: false,
+          textDraft: nextText,
+          textSaving: false,
+        }
+      })
+      setStatus(`已保存：${targetPath}`)
+      return true
+    } catch (error) {
+      setPreviewDialog((current) => {
+        if (!current || current.kind !== 'text' || current.file.path !== targetPath) {
+          return current
+        }
+        return {
+          ...current,
+          textSaving: false,
+        }
+      })
+      notifyError('保存失败', error)
+      return false
+    }
+  }, [client, notifyError, previewDialog])
 
   const openPreviewFile = useCallback(
     async (targetClient: WebDAVClient, file: RemoteFile) => {
       const previewKind = toPreviewFileKind(file.kind)
       if (!previewKind) {
         notifyError(`暂不支持预览该文件类型：${file.name}`)
-        return
+        return false
+      }
+
+      if (previewDialog && normalizeDavPath(previewDialog.file.path) !== normalizeDavPath(file.path)) {
+        const closed = closePreviewDialog()
+        if (!closed) {
+          return false
+        }
       }
 
       previewRequestRef.current += 1
@@ -341,7 +433,10 @@ function App() {
         kind: previewKind,
         loading: true,
         objectUrl: '',
+        textDirty: false,
+        textSaving: false,
         textContent: '',
+        textDraft: '',
       })
 
       try {
@@ -356,10 +451,13 @@ function App() {
             kind: previewKind,
             loading: false,
             objectUrl: '',
+            textDirty: false,
+            textSaving: false,
             textContent,
+            textDraft: textContent,
           })
           setStatus(`预览：${normalizedPath}`)
-          return
+          return true
         }
 
         const { payload } = await readRemoteBinaryFile(targetClient, normalizedPath)
@@ -381,12 +479,15 @@ function App() {
           kind: previewKind,
           loading: false,
           objectUrl,
+          textDirty: false,
+          textSaving: false,
           textContent: '',
+          textDraft: '',
         })
         setStatus(`预览：${normalizedPath}`)
       } catch (error) {
         if (previewRequestRef.current !== requestId) {
-          return
+          return false
         }
         setPreviewDialog({
           error: parseErrorMessage(error),
@@ -394,11 +495,17 @@ function App() {
           kind: previewKind,
           loading: false,
           objectUrl: '',
+          textDirty: false,
+          textSaving: false,
           textContent: '',
+          textDraft: '',
         })
+        return false
       }
+
+      return true
     },
-    [notifyError, revokePreviewObjectUrl],
+    [closePreviewDialog, notifyError, previewDialog, revokePreviewObjectUrl],
   )
 
   const downloadPreviewFile = useCallback(async () => {
@@ -408,7 +515,7 @@ function App() {
 
     try {
       if (previewDialog.kind === 'text') {
-        const textBlob = new Blob([previewDialog.textContent], {
+        const textBlob = new Blob([previewDialog.textDraft], {
           type: 'text/plain;charset=utf-8',
         })
         downloadBlob(textBlob, previewDialog.file.name)
@@ -446,14 +553,14 @@ function App() {
       setDirectories(snapshot.directories)
 
       if (previewDialog && !snapshot.files.some((item) => item.path === previewDialog.file.path)) {
-        closePreviewDialog()
+        closePreviewDialog({ force: true })
       }
 
       const targetPath = pickMarkdownTargetPath(snapshot.files, preferredPath, activeFilePath)
       if (!targetPath) {
         setActiveFilePath('')
         setSelectedFilePaths([])
-        setContentWithHistory('# 空目录\n\n当前目录没有 Markdown 文件。\n\n你仍可点击文本、图片、视频、音频、PDF 文件进行预览。', {
+        setContentWithHistory('# 空目录\n\n当前目录没有 Markdown 文件。\n\n你仍可点击文本文件进行预览与编辑，或点击图片、视频、音频、PDF 文件进行预览。', {
           resetHistory: true,
         })
         setWysiwygSyncVersion((prev) => prev + 1)
@@ -472,7 +579,7 @@ function App() {
       setDirectories(snapshot.directories)
 
       if (previewDialog && !snapshot.files.some((item) => item.path === previewDialog.file.path)) {
-        closePreviewDialog()
+        closePreviewDialog({ force: true })
       }
     },
     [closePreviewDialog, listRemote, previewDialog],
@@ -492,6 +599,9 @@ function App() {
 
   const connectWebdav = useCallback(
     async (inputConfig: DavConfig, options?: { persist?: boolean }) => {
+      const requestId = ++connectRequestRef.current
+      const isCurrentRequest = () => connectRequestRef.current === requestId
+
       const nextConfig = {
         attachments: normalizeAttachmentSettings(inputConfig.attachments),
         rootPath: normalizeRootPath(inputConfig.rootPath),
@@ -519,13 +629,17 @@ function App() {
         )
 
         const snapshot = await listRemote(nextClient, nextConfig)
+        if (!isCurrentRequest()) {
+          return false
+        }
+
         setClient(nextClient)
         setConfig(nextConfig)
         setDraftConfig(nextConfig)
         setFiles(snapshot.files)
         setDirectories(snapshot.directories)
         setExpandedFolders((prev) => ({ ...prev, [nextConfig.rootPath]: true }))
-        closePreviewDialog()
+        closePreviewDialog({ force: true })
 
         if (options?.persist === false) {
           localStorage.removeItem(CONFIG_KEY)
@@ -540,34 +654,46 @@ function App() {
         } else {
           setActiveFilePath('')
           setSelectedFilePaths([])
-          setContentWithHistory('# 空目录\n\n当前目录没有 Markdown 文件。\n\n你仍可点击文本、图片、视频、音频、PDF 文件进行预览。', {
-            resetHistory: true,
-          })
+          setContentWithHistory(
+            '# 空目录\n\n当前目录没有 Markdown 文件。\n\n你仍可点击文本文件进行预览与编辑，或点击图片、视频、音频、PDF 文件进行预览。',
+            {
+              resetHistory: true,
+            },
+          )
           setWysiwygSyncVersion((prev) => prev + 1)
         }
 
         setStatus(`已连接：${nextConfig.url}`)
         return true
       } catch (error) {
+        if (!isCurrentRequest()) {
+          return false
+        }
+
         setClient(null)
+        setConfig(null)
         setFiles([])
         setDirectories([])
         setActiveFilePath('')
         setSelectedFilePaths([])
-        closePreviewDialog()
+        closePreviewDialog({ force: true })
         notifyError('连接失败', error)
         return false
       } finally {
-        setBusy(false)
+        if (isCurrentRequest()) {
+          setBusy(false)
+        }
       }
     },
     [closePreviewDialog, listRemote, notifyError, readFile, setContentWithHistory],
   )
 
   useEffect(() => {
-    if (!initialStoredConfig) {
+    if (!initialStoredConfig || autoConnectAttemptedRef.current) {
       return
     }
+
+    autoConnectAttemptedRef.current = true
     void connectWebdav(initialStoredConfig, { persist: true })
   }, [connectWebdav, initialStoredConfig])
 
@@ -663,22 +789,31 @@ function App() {
         }
       }
 
-      if (selected.kind === 'markdown' && normalizedPath === activeFilePath) {
-        closePreviewDialog()
-        setSelectedFilePaths([normalizedPath])
+      if (selected.kind !== 'markdown') {
+        if (previewDialog?.file.path === normalizedPath) {
+          setSelectedFilePaths([normalizedPath])
+          return
+        }
+
+        const opened = await openPreviewFile(client, selected)
+        if (opened) {
+          setSelectedFilePaths([normalizedPath])
+        }
+        return
+      }
+
+      const closed = closePreviewDialog()
+      if (!closed) {
         return
       }
 
       setSelectedFilePaths([normalizedPath])
-
-      if (selected.kind !== 'markdown') {
-        await openPreviewFile(client, selected)
+      if (normalizedPath === activeFilePath) {
         return
       }
 
       setBusy(true)
       try {
-        closePreviewDialog()
         await readFile(client, normalizedPath)
         setStatus(`已载入：${normalizedPath}`)
       } catch (error) {
@@ -687,7 +822,18 @@ function App() {
         setBusy(false)
       }
     },
-    [activeFilePath, client, closePreviewDialog, fileMap, hasUnsavedChanges, notifyError, onSave, openPreviewFile, readFile],
+    [
+      activeFilePath,
+      client,
+      closePreviewDialog,
+      fileMap,
+      hasUnsavedChanges,
+      notifyError,
+      onSave,
+      openPreviewFile,
+      previewDialog,
+      readFile,
+    ],
   )
 
   const onToggleFileSelection = useCallback(
@@ -912,6 +1058,7 @@ function App() {
   }, [saveIconFlash])
 
   const onLogout = useCallback(() => {
+    connectRequestRef.current += 1
     localStorage.removeItem(CONFIG_KEY)
     setClient(null)
     setConfig(null)
@@ -923,7 +1070,7 @@ function App() {
     setDraftConfig({ ...EMPTY_CONFIG, attachments: { ...DEFAULT_ATTACHMENT_SETTINGS } })
     setRememberCredentials(false)
     setShowPassword(false)
-    closePreviewDialog()
+    closePreviewDialog({ force: true })
     clearImagePreviewCache()
     setContentWithHistory(DEFAULT_MARKDOWN, { resetHistory: true })
     setWysiwygSyncVersion((prev) => prev + 1)
@@ -962,6 +1109,10 @@ function App() {
 
   useEffect(() => {
     const onKeydown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) {
+        return
+      }
+
       const hasModifier = event.ctrlKey || event.metaKey
       if (!hasModifier || event.altKey) {
         return
@@ -969,6 +1120,12 @@ function App() {
 
       const key = event.key.toLowerCase()
       if (key === 's') {
+        if (previewDialog?.kind === 'text' && !previewDialog.loading && !previewDialog.error) {
+          event.preventDefault()
+          void savePreviewTextFile()
+          return
+        }
+
         if (!canUseEditorActions) {
           return
         }
@@ -999,7 +1156,7 @@ function App() {
     return () => {
       window.removeEventListener('keydown', onKeydown)
     }
-  }, [canUseEditorActions, onRedo, onSave, onUndo])
+  }, [canUseEditorActions, onRedo, onSave, onUndo, previewDialog, savePreviewTextFile])
 
   const insertAroundSelection = useCallback(
     (prefix: string, suffix: string, placeholder: string) => {
@@ -1137,14 +1294,14 @@ function App() {
     [canUseEditorActions, editorMode, insertAroundSelection, insertBlock, insertLinePrefix, onRedo, onUndo],
   )
 
-  const createMarkdownFile = useCallback(
+  const createTextFile = useCallback(
     async (targetDirectory: string) => {
       if (!client || !config) {
         notifyError('请先连接 WebDAV')
         return
       }
 
-      const rawName = window.prompt('输入新文件名（可不带 .md）：', 'untitled.md')
+      const rawName = window.prompt('输入新文本文件名（可不带后缀，默认 .md）：', 'untitled.md')
       if (!rawName) {
         return
       }
@@ -1154,12 +1311,20 @@ function App() {
         return
       }
 
-      const nextName = /\.(md|markdown)$/i.test(trimmed) ? trimmed : `${trimmed}.md`
+      const nextName = /\.[^/.]+$/.test(trimmed) ? trimmed : `${trimmed}.md`
+      if (!isCreatableTextFileName(nextName)) {
+        notifyError('仅支持创建文本文件后缀（如 .md/.txt/.json/.yaml/.toml）')
+        return
+      }
+
+      const extension = getFileExtension(nextName)
+      const initialContent = MARKDOWN_FILE_EXTENSIONS.has(extension) ? undefined : ''
       const nextPath = joinDavPath(targetDirectory, nextName)
 
       setBusy(true)
       try {
-        await createRemoteMarkdownFile(client, {
+        await createRemoteTextFile(client, {
+          content: initialContent,
           onFallbackMode: () => {
             if (warnedAListCreateFallbackRef.current) {
               return
@@ -1309,6 +1474,14 @@ function App() {
 
   const previewTypeLabel = previewDialog ? getPreviewTypeLabel(previewDialog.kind) : ''
   const canDownloadPreview = Boolean(previewDialog) && !previewDialog?.loading && !previewDialog?.error
+  const canSavePreviewText =
+    Boolean(client) &&
+    previewDialog !== null &&
+    previewDialog.kind === 'text' &&
+    !previewDialog.loading &&
+    !previewDialog.error &&
+    !previewDialog.textSaving &&
+    previewDialog.textDirty
   const toolbarDisabled = !canUseEditorActions
 
   return (
@@ -1701,7 +1874,7 @@ function App() {
                   </div>
                 ) : !activeFilePath ? (
                   <div className="flex h-full items-center justify-center px-6 text-sm text-[var(--mf-muted)]">
-                    请选择一个 Markdown 文件进行编辑，或点击文本/图片/视频/音频/PDF 文件进行预览
+                    请选择一个 Markdown 文件进行编辑，或点击文本文件进行预览与编辑，点击图片/视频/音频/PDF 文件进行预览
                   </div>
                 ) : editorMode === 'source' ? (
                   <textarea
@@ -1877,35 +2050,71 @@ function App() {
           }
         }}
       >
-        <DialogContent className="h-[min(78vh,640px)] w-[calc(100vw-24px)] max-w-[760px] overflow-hidden rounded-[16px] border-[var(--mf-panel-border)] bg-[var(--mf-panel-bg)] p-0">
+        <DialogContent
+          className="h-[min(78vh,640px)] w-[calc(100vw-24px)] max-w-[760px] overflow-hidden rounded-[16px] border-[var(--mf-panel-border)] bg-[var(--mf-panel-bg)] p-0 [&>button:last-child]:hidden"
+          onInteractOutside={(event) => event.preventDefault()}
+        >
           <DialogTitle className="sr-only">文件预览</DialogTitle>
           <DialogDescription className="sr-only">预览文本、图片、视频、音频和 PDF 文件。</DialogDescription>
 
           {previewDialog ? (
             <div className="flex h-full flex-col">
-              <div className="flex items-center gap-3 border-b border-[var(--mf-panel-border)] px-4 py-3 pr-14">
+              <div className="flex items-center gap-3 border-b border-[var(--mf-panel-border)] px-4 py-3">
                 <div className="min-w-0 flex-1">
                   <div className="flex min-w-0 items-center gap-2">
                     <p className="truncate text-sm font-semibold text-[var(--mf-field-text)]">{previewDialog.file.name}</p>
                     <span className="shrink-0 rounded-full bg-[var(--mf-brand-soft)] px-2 py-1 text-[11px] font-medium text-[var(--mf-brand-deep)]">
                       {previewTypeLabel}
                     </span>
+                    {previewDialog.kind === 'text' && previewDialog.textDirty ? (
+                      <span className="shrink-0 rounded-full bg-[var(--mf-warning-soft)] px-2 py-1 text-[11px] font-medium text-[var(--mf-warning-strong)]">
+                        未保存
+                      </span>
+                    ) : null}
                   </div>
                   <p className="truncate text-xs text-[var(--mf-muted)]">{previewDialog.file.path}</p>
                 </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-8 shrink-0"
-                  onClick={() => {
-                    void downloadPreviewFile()
-                  }}
-                  disabled={!canDownloadPreview}
-                  title="下载原文件"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  <span className="ml-1 text-xs">下载</span>
-                </Button>
+                <div className="flex shrink-0 items-center gap-1">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 shrink-0"
+                    onClick={() => {
+                      void downloadPreviewFile()
+                    }}
+                    disabled={!canDownloadPreview}
+                    title="下载原文件"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    <span className="ml-1 text-xs">下载</span>
+                  </Button>
+                  {previewDialog.kind === 'text' ? (
+                    <Button
+                      variant="toolbar"
+                      size="icon"
+                      className="text-[var(--mf-feedback)] hover:bg-[var(--mf-feedback-soft)] hover:text-[var(--mf-feedback-strong)]"
+                      onClick={() => {
+                        void savePreviewTextFile()
+                      }}
+                      disabled={!canSavePreviewText}
+                      title={previewDialog.textSaving ? '保存中...' : '保存'}
+                      aria-label="保存文本文件"
+                    >
+                      <Check className={`h-4 w-4 ${previewDialog.textSaving ? 'animate-pulse' : ''}`} />
+                    </Button>
+                  ) : null}
+                  <Button
+                    variant="toolbar"
+                    size="icon"
+                    onClick={() => {
+                      closePreviewDialog()
+                    }}
+                    title="关闭"
+                    aria-label="关闭预览"
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
               </div>
 
               <div className="min-h-0 flex-1 overflow-auto bg-[var(--mf-panel-soft)] p-4">
@@ -1921,9 +2130,13 @@ function App() {
                     </p>
                   </div>
                 ) : previewDialog.kind === 'text' ? (
-                  <pre className="h-full min-h-[220px] whitespace-pre-wrap break-words rounded-[8px] border border-[var(--mf-preview-border)] bg-[var(--mf-panel-bg)] p-4 font-mono text-[13px] leading-6 text-[var(--mf-field-text)]">
-                    {previewDialog.textContent || '（空文本文件）'}
-                  </pre>
+                  <TextPreviewEditor
+                    fileName={previewDialog.file.name}
+                    value={previewDialog.textDraft}
+                    onChange={updatePreviewTextDraft}
+                    onSave={savePreviewTextFile}
+                    readOnly={previewDialog.textSaving}
+                  />
                 ) : previewDialog.kind === 'image' ? (
                   <div className="flex h-full min-h-[220px] items-center justify-center">
                     <img
@@ -1980,7 +2193,7 @@ function App() {
         menuPath={menuPath}
         onClose={() => setContextMenu(null)}
         onCreateFolder={createFolder}
-        onCreateMarkdownFile={createMarkdownFile}
+        onCreateTextFile={createTextFile}
         onDelete={deleteNode}
         onRefresh={onRefresh}
         onRename={renameNode}

@@ -49,7 +49,10 @@ export type PreviewDialogState = {
   kind: PreviewFileKind
   loading: boolean
   objectUrl: string
+  textDirty: boolean
+  textSaving: boolean
   textContent: string
+  textDraft: string
 }
 
 export type EditorMode = 'wysiwyg' | 'source'
@@ -164,6 +167,7 @@ export const TEXT_FILE_EXTENSIONS = new Set([
   'toml',
   'env',
 ])
+export const CREATABLE_TEXT_FILE_EXTENSIONS = new Set([...MARKDOWN_FILE_EXTENSIONS, ...TEXT_FILE_EXTENSIONS])
 export const IMAGE_FILE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'])
 export const VIDEO_FILE_EXTENSIONS = new Set(['mp4', 'webm', 'ogv', 'mov', 'm4v', 'mkv'])
 export const AUDIO_FILE_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'])
@@ -319,6 +323,14 @@ export function getFileExtension(path: string) {
     return ''
   }
   return baseName.slice(dotIndex + 1)
+}
+
+export function isCreatableTextFileName(name: string) {
+  const extension = getFileExtension(name)
+  if (!extension) {
+    return false
+  }
+  return CREATABLE_TEXT_FILE_EXTENSIONS.has(extension)
 }
 
 export function inferRemoteFileKind(path: string): RemoteFileKind {

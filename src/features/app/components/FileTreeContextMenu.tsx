@@ -8,7 +8,7 @@ type FileTreeContextMenuProps = {
   openFileMenuLabel: string
   onClose: () => void
   onCreateFolder: (targetPath: string) => Promise<void>
-  onCreateMarkdownFile: (targetPath: string) => Promise<void>
+  onCreateTextFile: (targetPath: string) => Promise<void>
   onDelete: (targetPath: string, kind: 'file' | 'directory') => Promise<void>
   onRefresh: () => Promise<void>
   onRename: (targetPath: string, kind: 'file' | 'directory') => Promise<void>
@@ -24,7 +24,7 @@ export function FileTreeContextMenu(props: FileTreeContextMenuProps) {
     openFileMenuLabel,
     onClose,
     onCreateFolder,
-    onCreateMarkdownFile,
+    onCreateTextFile,
     onDelete,
     onRefresh,
     onRename,
@@ -75,10 +75,10 @@ export function FileTreeContextMenu(props: FileTreeContextMenuProps) {
             className="w-full rounded-[6px] px-3 py-2 text-left text-sm text-[var(--mf-muted-strong)] hover:bg-[var(--mf-surface-muted)]"
             onClick={() => {
               onClose()
-              void onCreateMarkdownFile(createTargetPath)
+              void onCreateTextFile(createTargetPath)
             }}
           >
-            在当前目录新建文件
+            在当前目录新建文本文件
           </button>
         </>
       ) : (
@@ -87,10 +87,10 @@ export function FileTreeContextMenu(props: FileTreeContextMenuProps) {
             className="w-full rounded-[6px] px-3 py-2 text-left text-sm text-[var(--mf-muted-strong)] hover:bg-[var(--mf-surface-muted)]"
             onClick={() => {
               onClose()
-              void onCreateMarkdownFile(createTargetPath)
+              void onCreateTextFile(createTargetPath)
             }}
           >
-            新建 Markdown 文件
+            新建文本文件
           </button>
           <button
             className="w-full rounded-[6px] px-3 py-2 text-left text-sm text-[var(--mf-muted-strong)] hover:bg-[var(--mf-surface-muted)]"

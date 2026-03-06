@@ -20,7 +20,7 @@ import {
 
 const NEW_MARKDOWN_TEMPLATE = '# 新建文档\n'
 
-type CreateMarkdownFileOptions = {
+type CreateTextFileOptions = {
   content?: string
   onFallbackMode?: () => void
   path: string
@@ -173,7 +173,7 @@ export async function ensureDavDirectory(targetClient: WebDAVClient, directoryPa
   }
 }
 
-export async function createMarkdownFile(targetClient: WebDAVClient, options: CreateMarkdownFileOptions) {
+export async function createTextFile(targetClient: WebDAVClient, options: CreateTextFileOptions) {
   const normalizedPath = normalizeDavPath(options.path)
   const content = options.content ?? NEW_MARKDOWN_TEMPLATE
 
