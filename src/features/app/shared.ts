@@ -6,6 +6,24 @@ import {
   sanitizeAttachmentFolderName,
 } from '@/lib/attachments'
 import type { ThemePreference } from '@/lib/theme'
+import {
+  getFileExtension,
+  getRemoteBasePath,
+  normalizeDavPath,
+  parentDavPath,
+  toAppDavPath,
+} from '@/features/app/dav-path'
+export {
+  getBaseName,
+  getFileExtension,
+  getRemoteBasePath,
+  joinDavPath,
+  normalizeDavPath,
+  parentDavPath,
+  toAppDavPath,
+  toClientDavPath,
+  toDavPathname,
+} from '@/features/app/dav-path'
 
 export type DavConfig = {
   attachments: AttachmentSettings
@@ -82,6 +100,7 @@ export type WysiwygEditorApi = {
   copy: () => boolean
   cut: () => boolean
   findImagePosFromTarget: (target: EventTarget | null) => number | null
+  getMarkdownSelection: () => null | { end: number; start: number }
   pasteWithFormatting: () => boolean
   resizeImageByPos: (pos: number, ratio: number) => boolean
   selectAll: () => boolean
@@ -222,107 +241,6 @@ export function normalizeRootPath(path: string) {
     return '/'
   }
   return `/${trimmed.replace(/^\/+/, '').replace(/\/+$/, '')}`
-}
-
-export function normalizeDavPath(path: string) {
-  const trimmed = path.trim()
-  if (!trimmed || trimmed === '/') {
-    return '/'
-  }
-  return `/${trimmed.replace(/^\/+/, '').replace(/\/+$/, '')}`
-}
-
-export function toClientDavPath(path: string) {
-  const normalizedPath = normalizeDavPath(path)
-  if (normalizedPath === '/') {
-    return ''
-  }
-  return normalizedPath.replace(/^\/+/, '')
-}
-
-export function toDavPathname(value: string) {
-  const trimmed = value.trim()
-  if (!trimmed) {
-    return '/'
-  }
-
-  const decoded = (() => {
-    try {
-      return decodeURIComponent(trimmed)
-    } catch {
-      return trimmed
-    }
-  })()
-
-  try {
-    return new URL(decoded, 'http://localhost').pathname || '/'
-  } catch {
-    return decoded
-  }
-}
-
-export function getRemoteBasePath(url: string) {
-  try {
-    return normalizeDavPath(new URL(url).pathname || '/')
-  } catch {
-    return '/'
-  }
-}
-
-export function toAppDavPath(remotePath: string, remoteBasePath: string) {
-  const normalizedPath = normalizeDavPath(toDavPathname(remotePath))
-  const normalizedBasePath = normalizeDavPath(remoteBasePath)
-
-  if (normalizedBasePath === '/') {
-    return normalizedPath
-  }
-
-  if (normalizedPath === normalizedBasePath) {
-    return '/'
-  }
-
-  if (normalizedPath.startsWith(`${normalizedBasePath}/`)) {
-    return normalizeDavPath(normalizedPath.slice(normalizedBasePath.length))
-  }
-
-  return normalizedPath
-}
-
-export function joinDavPath(basePath: string, segment: string) {
-  const base = normalizeDavPath(basePath)
-  const part = segment.trim().replace(/^\/+/, '')
-
-  if (!part) {
-    return base
-  }
-
-  if (base === '/') {
-    return `/${part}`
-  }
-
-  return `${base}/${part}`
-}
-
-export function parentDavPath(path: string) {
-  const normalized = normalizeDavPath(path)
-  if (normalized === '/') {
-    return '/'
-  }
-  const next = normalized.split('/').slice(0, -1).join('/')
-  return next ? normalizeDavPath(next) : '/'
-}
-
-export function getBaseName(path: string) {
-  return normalizeDavPath(path).split('/').filter(Boolean).pop() ?? '/'
-}
-
-export function getFileExtension(path: string) {
-  const baseName = getBaseName(path).toLowerCase()
-  const dotIndex = baseName.lastIndexOf('.')
-  if (dotIndex <= 0 || dotIndex >= baseName.length - 1) {
-    return ''
-  }
-  return baseName.slice(dotIndex + 1)
 }
 
 export function isCreatableTextFileName(name: string) {

@@ -6,7 +6,7 @@ import {
   useRef,
 } from 'react'
 import { languages } from '@codemirror/language-data'
-import { EditorView } from '@codemirror/view'
+import { EditorView as CodeMirrorEditorView } from '@codemirror/view'
 import { Crepe } from '@milkdown/crepe'
 import {
   HighlightStyle,
@@ -19,6 +19,8 @@ import {
 } from '@codemirror/language'
 import { commandsCtx, editorViewCtx } from '@milkdown/kit/core'
 import { redoCommand, undoCommand } from '@milkdown/kit/plugin/history'
+import { TextSelection } from '@milkdown/kit/prose/state'
+import type { EditorView as ProseMirrorEditorView } from '@milkdown/kit/prose/view'
 import {
   addBlockTypeCommand,
   clearTextInCurrentBlockCommand,
@@ -40,6 +42,14 @@ import { Milkdown, useEditor } from '@milkdown/react'
 import mermaid from 'mermaid'
 
 import { type ToolbarAction, type WysiwygEditorApi } from '@/features/app/shared'
+import {
+  MARKDOWN_SELECTION_CARET_MARKER,
+  MARKDOWN_SELECTION_END_MARKER,
+  MARKDOWN_SELECTION_START_MARKER,
+  extractMarkdownSelectionMarkers,
+  injectMarkdownSelectionMarkers,
+  type MarkdownSelection,
+} from '@/features/app/editor-selection'
 
 import '@milkdown/crepe/theme/common/style.css'
 import '@milkdown/crepe/theme/frame.css'
@@ -108,7 +118,7 @@ const codeHighlightStyle = HighlightStyle.define([
   { tag: [t.link, t.url], color: 'var(--mf-code-token-link)', textDecoration: 'underline' },
 ])
 
-const codeEditorTheme = EditorView.theme({
+const codeEditorTheme = CodeMirrorEditorView.theme({
   '&': {
     backgroundColor: 'var(--mf-code-block-bg)',
     border: '1px solid var(--mf-code-block-border)',
@@ -199,8 +209,97 @@ export type WysiwygMarkdownEditorProps = {
   onContextMenu?: (event: ReactMouseEvent<HTMLDivElement>) => void
   onImageUpload: (file: File) => Promise<string>
   onPasteCapture?: (event: ReactClipboardEvent<HTMLDivElement>) => void
+  onSelectionRestoreHandled?: (requestId: number) => void
   resolveImageSrc: (url: string) => Promise<string> | string
+  selectionToRestore?: null | {
+    id: number
+    selection: MarkdownSelection
+  }
   syncVersion: number
+}
+
+type TextChunk = {
+  startOffset: number
+  startPos: number
+  text: string
+}
+
+function buildTextChunks(view: ProseMirrorEditorView) {
+  const chunks: TextChunk[] = []
+  let offset = 0
+
+  view.state.doc.descendants((node, pos) => {
+    if (!node.isText || !node.text) {
+      return
+    }
+
+    chunks.push({
+      startOffset: offset,
+      startPos: pos,
+      text: node.text,
+    })
+    offset += node.text.length
+  })
+
+  return {
+    chunks,
+    text: chunks.map((chunk) => chunk.text).join(''),
+  }
+}
+
+function textOffsetToDocPos(chunks: TextChunk[], offset: number) {
+  for (const chunk of chunks) {
+    const chunkEnd = chunk.startOffset + chunk.text.length
+    if (offset < chunkEnd) {
+      return chunk.startPos + (offset - chunk.startOffset)
+    }
+  }
+
+  const lastChunk = chunks[chunks.length - 1]
+  if (!lastChunk) {
+    return 1
+  }
+
+  return lastChunk.startPos + lastChunk.text.length
+}
+
+function restoreSelectionFromMarkers(view: ProseMirrorEditorView) {
+  const { chunks, text } = buildTextChunks(view)
+
+  const caretOffset = text.indexOf(MARKDOWN_SELECTION_CARET_MARKER)
+  if (caretOffset >= 0) {
+    const markerStart = textOffsetToDocPos(chunks, caretOffset)
+    const markerEnd = textOffsetToDocPos(chunks, caretOffset + MARKDOWN_SELECTION_CARET_MARKER.length)
+    const transaction = view.state.tr.delete(markerStart, markerEnd)
+    transaction.setSelection(TextSelection.create(transaction.doc, markerStart))
+    view.dispatch(transaction.scrollIntoView())
+    view.focus()
+    return true
+  }
+
+  const startOffset = text.indexOf(MARKDOWN_SELECTION_START_MARKER)
+  const endOffset = text.indexOf(MARKDOWN_SELECTION_END_MARKER)
+  if (startOffset < 0 || endOffset < 0 || startOffset > endOffset) {
+    return false
+  }
+
+  const startMarkerStart = textOffsetToDocPos(chunks, startOffset)
+  const startMarkerEnd = textOffsetToDocPos(chunks, startOffset + MARKDOWN_SELECTION_START_MARKER.length)
+  const endMarkerStart = textOffsetToDocPos(chunks, endOffset)
+  const endMarkerEnd = textOffsetToDocPos(chunks, endOffset + MARKDOWN_SELECTION_END_MARKER.length)
+
+  let transaction = view.state.tr.delete(endMarkerStart, endMarkerEnd)
+  transaction = transaction.delete(startMarkerStart, startMarkerEnd)
+
+  const selection = TextSelection.between(
+    transaction.doc.resolve(startMarkerStart),
+    transaction.doc.resolve(endMarkerStart - MARKDOWN_SELECTION_START_MARKER.length),
+  )
+
+  transaction.setSelection(selection)
+  view.dispatch(transaction.scrollIntoView())
+  view.focus()
+  return true
 }
 
 export function WysiwygMarkdownEditor({
@@ -211,7 +310,9 @@ export function WysiwygMarkdownEditor({
   onContextMenu,
   onImageUpload,
   onPasteCapture,
+  onSelectionRestoreHandled,
   resolveImageSrc,
+  selectionToRestore,
   syncVersion,
 }: WysiwygMarkdownEditorProps) {
   const editorShellRef = useRef<HTMLDivElement | null>(null)
@@ -243,6 +344,28 @@ export function WysiwygMarkdownEditor({
   useEffect(() => {
     markdownRef.current = markdown
   }, [markdown])
+
+  const withSuppressedChange = useCallback((task: () => void, settleFrames = 1) => {
+    suppressChangeRef.current = true
+    pendingMarkdownRef.current = null
+    if (flushFrameRef.current !== null) {
+      cancelAnimationFrame(flushFrameRef.current)
+      flushFrameRef.current = null
+    }
+    task()
+
+    const release = (remainingFrames: number) => {
+      if (remainingFrames <= 0) {
+        suppressChangeRef.current = false
+        return
+      }
+      requestAnimationFrame(() => {
+        release(remainingFrames - 1)
+      })
+    }
+
+    release(settleFrames)
+  }, [])
 
   const disableSpellcheckInEditor = useCallback(() => {
     const root = editorShellRef.current
@@ -312,6 +435,7 @@ export function WysiwygMarkdownEditor({
     mermaid.initialize({
       securityLevel: 'strict',
       startOnLoad: false,
+      suppressErrorRendering: true,
       theme,
       htmlLabels: false,
       flowchart: {
@@ -440,12 +564,54 @@ export function WysiwygMarkdownEditor({
       return
     }
 
-    suppressChangeRef.current = true
-    crepe.editor.action(replaceAll(nextMarkdown, true))
-    requestAnimationFrame(() => {
-      suppressChangeRef.current = false
-    })
-  }, [syncVersion])
+    withSuppressedChange(() => {
+      crepe.editor.action(replaceAll(nextMarkdown, true))
+    }, 1)
+  }, [syncVersion, withSuppressedChange])
+
+  useEffect(() => {
+    if (!selectionToRestore) {
+      return
+    }
+
+    let cancelled = false
+    let frameId: number | null = null
+
+    const restoreWhenReady = () => {
+      if (cancelled) {
+        return
+      }
+
+      const crepe = crepeRef.current
+      if (!crepe) {
+        frameId = requestAnimationFrame(restoreWhenReady)
+        return
+      }
+
+      const markedMarkdown = injectMarkdownSelectionMarkers(markdownRef.current, selectionToRestore.selection)
+      withSuppressedChange(() => {
+        crepe.editor.action(replaceAll(markedMarkdown, true))
+        const restored = crepe.editor.action((ctx) => {
+          const view = ctx.get(editorViewCtx) as ProseMirrorEditorView
+          return restoreSelectionFromMarkers(view)
+        })
+        if (!restored) {
+          crepe.editor.action(replaceAll(markdownRef.current, true))
+        }
+      }, 2)
+
+      onSelectionRestoreHandled?.(selectionToRestore.id)
+    }
+
+    frameId = requestAnimationFrame(restoreWhenReady)
+
+    return () => {
+      cancelled = true
+      if (frameId !== null) {
+        cancelAnimationFrame(frameId)
+      }
+    }
+  }, [onSelectionRestoreHandled, selectionToRestore, withSuppressedChange])
 
   useEffect(() => {
     crepeRef.current?.setReadonly(!editable)
@@ -632,12 +798,64 @@ export function WysiwygMarkdownEditor({
     })
   }, [])
 
+  const getMarkdownSelection = useCallback(() => {
+    const crepe = crepeRef.current
+    if (!crepe) {
+      return null
+    }
+
+    const currentMarkdown = markdownRef.current
+    const markedMarkdown = (() => {
+      suppressChangeRef.current = true
+      const result = (() => {
+        try {
+          return crepe.editor.action((ctx) => {
+            const view = ctx.get(editorViewCtx) as ProseMirrorEditorView
+            const { from, to } = view.state.selection
+            const transaction =
+              from === to
+                ? view.state.tr.insertText(MARKDOWN_SELECTION_CARET_MARKER, from)
+                : view.state.tr
+                    .insertText(MARKDOWN_SELECTION_END_MARKER, to)
+                    .insertText(MARKDOWN_SELECTION_START_MARKER, from)
+
+            view.dispatch(transaction)
+            return crepe.getMarkdown()
+          })
+        } catch {
+          return null
+        }
+      })()
+
+      crepe.editor.action(replaceAll(currentMarkdown, true))
+      markdownRef.current = currentMarkdown
+      pendingMarkdownRef.current = null
+      if (flushFrameRef.current !== null) {
+        cancelAnimationFrame(flushFrameRef.current)
+        flushFrameRef.current = null
+      }
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          suppressChangeRef.current = false
+        })
+      })
+      return result
+    })()
+
+    if (!markedMarkdown) {
+      return null
+    }
+
+    return extractMarkdownSelectionMarkers(markedMarkdown).selection
+  }, [])
+
   useEffect(() => {
     onApiChange({
       applyToolbarAction,
       copy: () => runDocumentCommand('copy'),
       cut: () => runDocumentCommand('cut'),
       findImagePosFromTarget,
+      getMarkdownSelection,
       insertMarkdown: insertMarkdownSnippet,
       insertPlainText,
       pasteWithFormatting: () => runDocumentCommand('paste'),
@@ -648,7 +866,16 @@ export function WysiwygMarkdownEditor({
     return () => {
       onApiChange(null)
     }
-  }, [applyToolbarAction, findImagePosFromTarget, insertMarkdownSnippet, insertPlainText, onApiChange, resizeImageByPos, runDocumentCommand])
+  }, [
+    applyToolbarAction,
+    findImagePosFromTarget,
+    getMarkdownSelection,
+    insertMarkdownSnippet,
+    insertPlainText,
+    onApiChange,
+    resizeImageByPos,
+    runDocumentCommand,
+  ])
 
   return (
     <div

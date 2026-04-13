@@ -47,6 +47,7 @@ import { useAttachmentManager } from '@/features/app/hooks/useAttachmentManager'
 import { useEditorContextMenu } from '@/features/app/hooks/useEditorContextMenu'
 import { useFileTreeContextMenu } from '@/features/app/hooks/useFileTreeContextMenu'
 import { WysiwygMarkdownEditor } from '@/features/app/WysiwygMarkdownEditor'
+import { extractMarkdownSelectionMarkers, type MarkdownSelection } from '@/features/app/editor-selection'
 import {
   CONFIG_KEY,
   DEFAULT_MARKDOWN,
@@ -120,6 +121,11 @@ import {
 } from '@/lib/theme'
 import { toast } from 'sonner'
 
+type PendingSelectionRestore = {
+  id: number
+  selection: MarkdownSelection
+}
+
 function App() {
   const initialStoredConfig = useMemo(() => loadStoredConfig(), [])
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -148,6 +154,8 @@ function App() {
   const [wysiwygSyncVersion, setWysiwygSyncVersion] = useState(0)
   const [themePreference, setThemePreferenceState] = useState<ThemePreference>(() => readThemePreference())
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => resolveTheme(readThemePreference()))
+  const [pendingSourceSelection, setPendingSourceSelection] = useState<PendingSelectionRestore | null>(null)
+  const [pendingWysiwygSelection, setPendingWysiwygSelection] = useState<PendingSelectionRestore | null>(null)
 
   const attachmentInputRef = useRef<HTMLInputElement>(null)
   const sourceEditorRef = useRef<HTMLTextAreaElement>(null)
@@ -160,6 +168,7 @@ function App() {
   const previewRequestRef = useRef(0)
   const autoConnectAttemptedRef = useRef(false)
   const connectRequestRef = useRef(0)
+  const selectionRestoreIdRef = useRef(0)
 
   const isConnected = client !== null
   const canEditDocument = isConnected && Boolean(activeFilePath)
@@ -235,8 +244,33 @@ function App() {
     })
   }, [fileMap])
 
+  useEffect(() => {
+    if (editorMode !== 'source' || !pendingSourceSelection) {
+      return
+    }
+
+    const frameId = requestAnimationFrame(() => {
+      const textarea = sourceEditorRef.current
+      if (!textarea) {
+        return
+      }
+
+      const max = textarea.value.length
+      const start = Math.max(0, Math.min(pendingSourceSelection.selection.start, max))
+      const end = Math.max(start, Math.min(pendingSourceSelection.selection.end, max))
+
+      textarea.focus()
+      textarea.setSelectionRange(start, end)
+      setPendingSourceSelection((current) => (current?.id === pendingSourceSelection.id ? null : current))
+    })
+
+    return () => {
+      cancelAnimationFrame(frameId)
+    }
+  }, [editorMode, pendingSourceSelection, content])
+
   const setContentWithHistory = useCallback((nextContent: string, options?: { resetHistory?: boolean; trackHistory?: boolean }) => {
-    const normalized = nextContent.replace(/\r\n?/g, '\n')
+    const normalized = extractMarkdownSelectionMarkers(nextContent.replace(/\r\n?/g, '\n')).markdown
     contentRef.current = normalized
     setContent(normalized)
 
@@ -1658,12 +1692,33 @@ function App() {
                 title={editorMode === 'wysiwyg' ? '切换到原文' : '切换到所见即所得'}
                 aria-label={editorMode === 'wysiwyg' ? '切换到原文' : '切换到所见即所得'}
                 disabled={!canEditDocument}
+                onMouseDown={(event) => {
+                  event.preventDefault()
+                }}
                 onClick={() => {
                   if (editorMode === 'wysiwyg') {
+                    const requestId = ++selectionRestoreIdRef.current
+                    const selection = wysiwygApiRef.current?.getMarkdownSelection() ?? { start: 0, end: 0 }
+                    setPendingSourceSelection({ id: requestId, selection })
+                    setPendingWysiwygSelection(null)
                     setEditorMode('source')
-                    requestAnimationFrame(() => sourceEditorRef.current?.focus())
                     return
                   }
+
+                  const textarea = sourceEditorRef.current
+                  const requestId = ++selectionRestoreIdRef.current
+                  const selection = textarea
+                    ? {
+                        end: textarea.selectionEnd,
+                        start: textarea.selectionStart,
+                      }
+                    : {
+                        end: 0,
+                        start: 0,
+                      }
+
+                  setPendingSourceSelection(null)
+                  setPendingWysiwygSelection({ id: requestId, selection })
                   setEditorMode('wysiwyg')
                   setWysiwygSyncVersion((prev) => prev + 1)
                 }}
@@ -1901,6 +1956,10 @@ function App() {
                     onApiChange={(api) => {
                       wysiwygApiRef.current = api
                     }}
+                    onSelectionRestoreHandled={(requestId) => {
+                      setPendingWysiwygSelection((current) => (current?.id === requestId ? null : current))
+                    }}
+                    selectionToRestore={pendingWysiwygSelection}
                     syncVersion={wysiwygSyncVersion}
                     onChange={(nextValue) => setContentWithHistory(nextValue)}
                     onContextMenu={onWysiwygEditorContextMenu}

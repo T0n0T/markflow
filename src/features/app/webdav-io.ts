@@ -43,7 +43,7 @@ export function buildRemoteSnapshot(list: DavListItem[], normalizedRoot: string)
 
     remoteFileMap.set(normalizedPath, {
       kind: inferRemoteFileKind(normalizedPath),
-      name: item.basename ?? getBaseName(normalizedPath),
+      name: getBaseName(normalizedPath),
       path: normalizedPath,
     })
 
